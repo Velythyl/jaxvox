@@ -1,0 +1,2 @@
+# jaxvox
+Lightweight voxel backend
