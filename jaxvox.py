@@ -191,7 +191,6 @@ class _VoxelCollection:
         view_control.set_lookat([0, 0, 0])
         visualizer.run()
 
-
     @classmethod
     def _tree_unflatten(cls, aux_data, children):
         minbound, maxbound = children
@@ -249,7 +248,6 @@ class VoxelGrid(_VoxelCollection):
         grid = grid.clip(0, jnp.inf)
         new__grid = self._grid.at[0:self.real_grid_shape[0], 0:self.real_grid_shape[1], 0:self.real_grid_shape[2]].set(grid)
         return self.replace(_grid=new__grid)
-
 
     def to_voxellist(self, size=None):
         xs, ys, zs = jnp.nonzero(self.grid, size=size, fill_value=self.padded_error_index_tuple)
@@ -434,11 +432,13 @@ class VoxelList(_VoxelCollection):
 
                 key = jax.random.PRNGKey(value)
                 random_color = jax.random.uniform(key, (3,))
-                # note: if you are very unlucky, the random color might be black, leading to a color collision.
-                # it is possible to fix this with another if-else, but i don't think this really matters so i didn't :P
-                return black_color * value_should_be_black + (1-value_should_be_black) * (random_color)
+                set_to_black = black_color * value_should_be_black + (1-value_should_be_black) * (random_color)
+
+                need_to_flip = jnp.logical_and(jnp.all(set_to_black == black_color), jnp.logical_not(value_should_be_black)).astype(jnp.float32)
+                return set_to_black * (1-need_to_flip) + need_to_flip * jax.random.uniform(jax.random.PRNGKey(0), (3,))
             import numpy as np
             new_colors = np.array(jax.vmap(attr_to_rgb)(attrs))
+            (attrs == 1).astype(jnp.float32)
 
         pcd_new.colors = o3d.utility.Vector3dVector(new_colors)
         new_grid = o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(pcd_new, voxel_size=self.voxel_size, min_bound=self.minbound, max_bound=self.maxbound)
@@ -509,10 +509,12 @@ if __name__ == '__main__':
         inner_grid = inner_grid.at[:,0,:].set(1)
         voxgrid = voxgrid.set_grid(inner_grid)
 
+
+
         #voxgrid = voxgrid.add_voxel()
 
         import matplotlib.pyplot as plt
-        attr_mapping = plt.get_cmap("gist_rainbow") # values to try: attr_mapping, None, and a colormap
+        attr_mapping = None #plt.get_cmap("gist_rainbow") # values to try: attr_mapping, None, and a colormap
 
         voxgrid.display_as_o3d(attr_mapping)
 
