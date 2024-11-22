@@ -34,6 +34,7 @@ class _VoxelCollection:
         return dataclasses.replace(self, **kwargs)
 
     def to_voxcol(self):
+        # useful for subclasses
         return _VoxelCollection(
             minbound=self.minbound,
             maxbound=self.maxbound,
@@ -54,14 +55,19 @@ class _VoxelCollection:
         padded_grid_shape = real_grid_shape.at[min_grid_dim].set(real_grid_shape[min_grid_dim] + 1)
         padded_grid_shape = indexarr2tup(padded_grid_shape)
 
-        return _VoxelCollection(minbound=minbound, maxbound=maxbound, padded_grid_dim=min_grid_dim, real_grid_shape=undo_pad_slicer, padded_grid_shape=padded_grid_shape, voxel_size=voxel_size)
+        return _VoxelCollection(
+            minbound=minbound,
+            maxbound=maxbound,
+            padded_grid_dim=min_grid_dim,
+            real_grid_shape=undo_pad_slicer,
+            padded_grid_shape=padded_grid_shape,
+            voxel_size=voxel_size
+        )
 
     @classmethod
     def build_from_voxcol(cls, voxcol):
+        # in subclasses, create subclass using info from voxcol
         raise NotImplementedError()
-
-    def to_kwargs(self):
-        return vars(self)
 
     @jax.jit
     def point_to_voxel(self, points):
@@ -114,7 +120,6 @@ class _VoxelCollection:
             return corner_points
         return jax.vmap(functools.partial(_voxel_to_8points, self))(voxels).squeeze()
 
-
     def add_voxel(self, voxels, attrs=None):
         raise NotImplementedError()
 
@@ -127,38 +132,61 @@ class _VoxelCollection:
         voxels = self.point_to_voxel(points)  # auto vmap
         return self.add_voxel(voxels, attrs)
 
-
     @jax.jit
     def is_point_set(self, points):
         points = jnp.atleast_2d(points)
         voxels = self.point_to_voxel(points)  # auto vmap
         return self.is_voxel_set(voxels)
 
-    def _cull(self, voxels, attrs=None, do_attrs=None):
+    @jax.jit
+    def _cull(self, voxels, attrs=None, do_attrs=None, return_invalid=None):
         voxels = jnp.atleast_2d(voxels)
 
         if attrs is None:
             attrs = jnp.ones(voxels.shape[0])
-        attrs = attrs.clip(1, jnp.inf)
-
-        voxels = jnp.atleast_2d(voxels)
 
         def transform_invalid(voxel):
-            is_invalid = jnp.logical_or(jnp.any(voxel < 0), jnp.any(voxel >= self.padded_error_index_array)).astype(jnp.int8)
+            out_low_bound = jnp.any(voxel < 0)
+            out_high_bound = jnp.logical_or(voxel[self.padded_grid_dim] >= self.padded_error_index_array[self.padded_grid_dim], jnp.any(voxel > self.padded_error_index_array))
+
+            is_invalid = jnp.logical_or(out_low_bound, out_high_bound).astype(jnp.int8)
             return self.padded_error_index_array * is_invalid + voxel * (1 - is_invalid), is_invalid
 
         voxels, invalid = jax.vmap(transform_invalid)(voxels)
 
         if do_attrs is not None:
             attrs = jax.vmap(lambda a, v: -1*v + a*(1-v))(attrs, invalid)
-            return voxels, attrs
+            if return_invalid is None:
+                return voxels, attrs
+            else:
+                return voxels, attrs, invalid
         else:
-            return voxels
+            if return_invalid is None:
+                return voxels
+            else:
+                return voxels, invalid
 
     def _tree_flatten(self):
         children = (self.minbound, self.maxbound)  # arrays / dynamic values
         aux_data = (self.padded_grid_dim, self.real_grid_shape, self.padded_grid_shape, self.voxel_size)  # hashable static values
         return children, aux_data
+
+    def display_as_o3d(self):
+        import open3d as o3d
+        o3d_vox = self.to_open3d()
+
+        visualizer = o3d.visualization.Visualizer()
+        visualizer.create_window()
+        visualizer.add_geometry(o3d_vox)
+        visualizer.poll_events()
+        visualizer.update_renderer()
+
+        view_control = visualizer.get_view_control()
+        view_control.set_front([1, 0, 0])
+        view_control.set_up([0, 0, 1])
+        view_control.set_lookat([0, 0, 0])
+        visualizer.run()
+
 
     @classmethod
     def _tree_unflatten(cls, aux_data, children):
@@ -173,13 +201,18 @@ class _VoxelCollection:
             voxel_size=voxel_size
         )
 
-    def to_open3d(self):
-        return self.to_voxellist().to_open3d()
 
     def to_voxelgrid(self):
         raise NotImplementedError()
 
     def to_voxellist(self):
+        raise NotImplementedError()
+
+    def to_open3d(self):
+        return self.to_voxellist().to_open3d()
+
+    @classmethod
+    def from_open3d(cls, o3d_grid):
         raise NotImplementedError()
 
 jax.tree_util.register_pytree_node(_VoxelCollection,
@@ -235,6 +268,10 @@ class VoxelGrid(_VoxelCollection):
         voxels = self._cull(voxels, do_attrs=None)
         return self._grid[voxels[:,0], voxels[:,1], voxels[:,2]].squeeze()
 
+    @classmethod
+    def from_open3d(cls, o3d_grid):
+        return VoxelList.from_open3d(o3d_grid).to_voxelgrid()
+
     def _tree_flatten(self):
         children, aux_data = super()._tree_flatten()
         children = (*children, self._grid)
@@ -279,7 +316,7 @@ class VoxelList(_VoxelCollection):
     def to_voxellist(self):
         return self
 
-    @jax.jit
+    #@jax.jit
     def add_voxel(self, voxels, attrs=None):
         voxels = jnp.atleast_2d(voxels)
 
@@ -298,8 +335,31 @@ class VoxelList(_VoxelCollection):
         return voxgrid.add_voxel(self.voxels, self.attrs)
 
 
-  #  @jax.jit
+    @jax.jit
     def is_voxel_set(self, voxels) -> jnp.ndarray:
+        voxels = jnp.atleast_2d(voxels)
+        voxels, invalid = self._cull(voxels, do_attrs=None, return_invalid=True)
+
+        def scan_func(carry, vox_attr):
+            self_vox, self_attr = vox_attr
+
+            seek_vox, attr_to_return = carry
+
+            found_seek_vox = jnp.all(seek_vox == self_vox).astype(jnp.uint8)
+
+            attr_to_return = self_attr * found_seek_vox + attr_to_return * (1-found_seek_vox)
+            return (seek_vox, attr_to_return), 1
+
+        def seek_one_input_voxel(self, input_vox):
+            return jax.lax.scan(scan_func, (input_vox, 0), (self.voxels, self.attrs))[0][-1]
+        returns = jax.vmap(functools.partial(seek_one_input_voxel, self))(voxels)
+        returns = (-1) * invalid + returns * (1-invalid)
+        return returns
+
+
+
+
+
         #return self.to_voxelgrid().is_voxel_set(voxels)
         voxels = jnp.atleast_2d(voxels)
         voxels = self._cull(voxels, do_attrs=None)
@@ -331,8 +391,6 @@ class VoxelList(_VoxelCollection):
         return jax.vmap(functools.partial(vmap_it, selfvoxel=self.voxels, selfattr=self.attrs))(voxels)
 
 
-        #return self.to_voxelgrid().is_voxel_set(voxels)
-
     def _tree_flatten(self):
         children, aux_data = super()._tree_flatten()
         children = (*children, self.voxels, self.attrs)
@@ -353,28 +411,92 @@ class VoxelList(_VoxelCollection):
             voxel_size=voxel_size
         )
 
-    def cull_errors(self):
-        # removes all attrs with -1 or whose index is the error index
-        # NOT JITTABLE
-        return self # todo
+    @jax.jit
+    def get_mask_valid(self, voxels=None, attrs=None):
+        if voxels is None:
+            assert attrs is None
+            voxels = self.voxels
+            attrs = self.attrs
+        return jnp.logical_not(self._cull(voxels, attrs=attrs, return_invalid=True)[-1])
 
     def to_open3d(self):
-        self = self.cull_errors()
-        centerpoints = self.voxel_to_point(self.voxels)
-        attrs = self.attrs
+        mask = self.get_mask_valid()
+
+        voxels = self.voxels[mask]
+        attrs = self.attrs[mask]
+        centerpoints = self.voxel_to_point(voxels)
 
         import open3d as o3d
         pcd_new = o3d.geometry.PointCloud()
         pcd_new.points = o3d.utility.Vector3dVector(centerpoints)
         #pcd_new.colors = o3d.utility.Vector3dVector(new_colors)
-        new_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd_new, voxel_size=self.voxel_size)
+        new_grid = o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(pcd_new, voxel_size=self.voxel_size, min_bound=self.minbound, max_bound=self.maxbound)
         return new_grid
+
+    @classmethod
+    def from_open3d(cls, o3d_grid):
+        maxbound = o3d_grid.get_max_bound()
+        minbound = o3d_grid.get_min_bound()
+        voxlist = VoxelList.build_from_bounds(minbound=minbound, maxbound=maxbound, voxel_size=o3d_grid.voxel_size)
+
+
+        voxels = o3d_grid.get_voxels()  # returns list of voxels
+        indices = np.stack(list(vx.grid_index for vx in voxels))
+        colors = np.stack(list(vx.color for vx in voxels))
+
+        bbox = o3d_grid.get_oriented_bounding_box()
+        vxd_origin = o3d_grid.origin
+
+
+
+        # todo attrs are colors
+        return voxlist.add_voxel(voxels=indices)
+
 
 jax.tree_util.register_pytree_node(VoxelList,
                                    VoxelList._tree_flatten,
                                    VoxelList._tree_unflatten)
 
 if __name__ == '__main__':
+    import open3d as o3d
+    import json
+    pcd = o3d.io.read_point_cloud("pcd.pcd")
+
+    with open("other_info.json", "r") as f:
+        other_info = json.loads(f.read())
+
+    o3d_voxelgrid_from_point_cloud = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, 0.02)
+
+    def test_o3d_io():
+        def compare_grids(o3d_grid1, o3d_grid2):
+            voxlist1 = VoxelList.from_open3d(o3d_grid1).to_voxelgrid()
+            voxlist2 = VoxelList.from_open3d(o3d_grid2).to_voxelgrid()
+            return jnp.all(voxlist1.grid == voxlist2.grid)
+
+        voxlist = VoxelList.from_open3d(o3d_voxelgrid_from_point_cloud)
+
+        new_voxel_grid = voxlist.to_open3d()
+
+        voxlist = VoxelList.from_open3d(new_voxel_grid)
+
+        voxgrid = voxlist.to_voxelgrid()
+
+        og_voxel_grid = voxgrid.to_open3d()
+
+        print(compare_grids(og_voxel_grid, new_voxel_grid))
+
+    def test_display():
+        voxgrid = VoxelGrid.from_open3d(o3d_voxelgrid_from_point_cloud)
+        voxgrid.display_as_o3d()
+
+    test_display()
+
+
+    exit()
+    """
+
+
+
     voxel_grid = VoxelList.build_from_bounds(
         minbound=jnp.array([-0.5, 1.0, -2.5]),
         maxbound=jnp.array([1.0, 10.0, 0.0]),
@@ -430,3 +552,4 @@ if __name__ == '__main__':
     view_control.set_lookat([0, 0, 0])
     visualizer.run()
     i=0
+    """
