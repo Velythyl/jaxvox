@@ -1,7 +1,5 @@
 import jax.numpy as jnp
 
-
-
 class AttrManager:
     def __init__(self):
         self.attr2key = {}
