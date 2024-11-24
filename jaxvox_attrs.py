@@ -36,10 +36,10 @@ class AttrManager:
 
         return jnp.asarray(ret)
 
-    def get_attrvals_for_attrkeys(self, attrkeys):
+    def get_attrvals_for_attrkeys(self, attrkeys, defaultvalue=None):
         ret = []
         for key in attrkeys:
-            ret.append(self.key2attr[int(key)])
+            ret.append(self.key2attr.get(int(key), defaultvalue))
         return jnp.asarray(ret)
 
     def get_attrkeys_for_attrvas(self, attrkeys):

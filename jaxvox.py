@@ -124,17 +124,25 @@ class _VoxelCollection:
             return corner_points
         return jax.vmap(functools.partial(_voxel_to_8points, self))(voxels).squeeze()
 
-    def add_voxel(self, voxels, attrs=None):
+    def set_voxel(self, voxels, attrs=None):
         raise NotImplementedError()
 
     def is_voxel_set(self, voxel):
         raise NotImplementedError()
 
-    @jax.jit
-    def add_point(self, points, attrs=None):
+    def del_voxel(self, voxels):
+        raise NotImplementedError()
+
+    def del_point(self, points):
         points = jnp.atleast_2d(points)
         voxels = self.point_to_voxel(points)  # auto vmap
-        return self.add_voxel(voxels, attrs)
+        return self.del_voxel(voxels)
+
+    @jax.jit
+    def set_point(self, points, attrs=None):
+        points = jnp.atleast_2d(points)
+        voxels = self.point_to_voxel(points)  # auto vmap
+        return self.set_voxel(voxels, attrs)
 
     @jax.jit
     def is_point_set(self, points):
@@ -148,6 +156,8 @@ class _VoxelCollection:
 
         if attrs is None:
             attrs = jnp.ones(voxels.shape[0])
+        else:
+            attrs = jnp.atleast_1d(attrs)
 
         def transform_invalid(voxel):
             out_low_bound = jnp.any(voxel < 0)
@@ -238,7 +248,7 @@ class VoxelGrid(_VoxelCollection):
     @classmethod
     def build_from_voxcol(cls, voxcol):
         # we want the array to be 0's everywhere where it's possible to set voxels, and -1 in the padding
-        grid = jnp.ones(voxcol.padded_grid_shape, dtype=jnp.int32) * -1
+        grid = jnp.ones(voxcol.padded_grid_shape) * -1
         grid = grid.at[0:voxcol.real_grid_shape[0],0:voxcol.real_grid_shape[1],0:voxcol.real_grid_shape[2]].set(0)
         return VoxelGrid(_grid=grid, **vars(voxcol))
 
@@ -263,11 +273,15 @@ class VoxelGrid(_VoxelCollection):
         return self
 
     #@jax.jit
-    def add_voxel(self, voxels, attrs=None):
+    def set_voxel(self, voxels, attrs=None):
         voxels = jnp.atleast_2d(voxels)
         voxels, attrs = self._cull(voxels, attrs, do_attrs=True)
         new_grid = self._grid.at[voxels[:,0], voxels[:,1], voxels[:,2]].set(attrs)
         return self.replace(_grid=new_grid)
+
+    def del_voxel(self, voxels):
+        voxels = jnp.atleast_2d(voxels)
+        return self.set_voxel(voxels, attrs=jnp.zeros(voxels.shape[0]))
 
     @jax.jit
     def is_voxel_set(self, voxels):
@@ -323,16 +337,20 @@ class VoxelList(_VoxelCollection):
     @classmethod
     def build_from_voxcol(cls, voxcol):
         voxels = jnp.array([], dtype=jnp.int32).reshape((0, 3))
-        attrs = jnp.array([], dtype=jnp.int32).reshape((0,))
+        attrs = jnp.array([], dtype=jnp.float32).reshape((0,))
         return VoxelList(voxels=voxels, attrs=attrs, **vars(voxcol))
 
     def to_voxellist(self):
         return self
 
     #@jax.jit
-    def add_voxel(self, voxels, attrs=None):
+    def set_voxel(self, voxels, attrs=None):
+        # note: this does NOT delete old voxels
+        # so the REAL information is the LAST voxel found in the list
+        # this is because delete indices is a bit messy in jax, but appending is easy/cheap
         voxels = jnp.atleast_2d(voxels)
 
+        #self = self.del_voxel(voxels)
         voxels, attrs = self._cull(voxels, attrs, do_attrs=True)
 
         new_voxels = jnp.vstack([self.voxels, voxels])
@@ -340,35 +358,96 @@ class VoxelList(_VoxelCollection):
 
         return self.replace(voxels=new_voxels, attrs=new_attrs)
 
+    def deduplicate(self):
+        # NOT JITTABLE
+        # traverses the list of voxels and removes duplicates. Only keeps last copy in list.
+        idxs, _ = self.find(self.voxels)
+        idxs = jnp.unique(idxs)
+        self = self._error_pad()
+
+        selfvoxels = self.voxels[idxs]
+        selfattrs = self.attrs[idxs]
+
+        attr_is_0_or_minus_1 = jnp.logical_or(selfattrs == 0, selfattrs == -1)
+        attr_is_valid = jnp.logical_not(attr_is_0_or_minus_1)
+        selfvoxels = selfvoxels[attr_is_valid]
+        selfattrs = selfattrs[attr_is_valid]
+        return self.replace(voxels=selfvoxels, attrs=selfattrs)
+
 #    @functools.partial(jax.jit, static_argnames=)
-    #@jax.jit
+    @jax.jit
     def to_voxelgrid(self) -> VoxelGrid:
         voxcol_information = self.to_voxcol() #VoxelGrid.build_from_voxcol()#.add_voxel(self.voxels, self.attrs)
         voxgrid = VoxelGrid.build_from_voxcol(voxcol_information)
-        return voxgrid.add_voxel(self.voxels, self.attrs)
 
+        # this ensures that the LAST information is the one that is actually taken into account.
+        # So this basically does "self.deduplication" on the fly,
+        # except it doesnt remove voxels that are set to 0, because they don't matter since the VoxelGrid has all-0
+        # values by default anyway
+        # Why not use self.deduplicate? Because this way, we can jit :)
+        original_voxels = self.voxels
+        original_attrs = self.attrs
 
-    @jax.jit
-    def is_voxel_set(self, voxels) -> jnp.ndarray:
+        all_idxs = jnp.arange(original_voxels.shape[0], dtype=jnp.uint32)
+        killed_voxels = original_voxels.at[all_idxs].set(self.padded_error_index_array)
+        killed_attrs = original_attrs.at[all_idxs].set(-1)
+
+        idxs, _ = self.find(original_voxels)
+
+        rescued_voxels = killed_voxels.at[idxs].set(original_voxels[idxs])
+        rescued_attrs = killed_attrs.at[idxs].set(original_attrs[idxs])
+
+        return voxgrid.set_voxel(rescued_voxels, rescued_attrs)
+
+    #@property
+    def _error_pad(self):
+        return self.set_voxel(self.padded_error_index_array, -1)
+
+    def del_voxel(self, voxels):
+        voxels = jnp.atleast_2d(voxels)
+        idxs, attrs = self.find(voxels)
+
+        # janky but it works...
+        self = self._error_pad()
+        selfvoxels = self.voxels
+        selfattrs = self.attrs
+
+        selfvoxels = selfvoxels.at[idxs].set(self.padded_error_index_array)
+        selfattrs = selfattrs.at[idxs].set(0)
+
+        return self.replace(
+            voxels=selfvoxels[:-1], attrs=selfattrs[:-1]
+        )
+
+    def find(self, voxels):
+        # returns index and attr of voxel
+        # if voxel is not found, both index and attr will be -1
         voxels = jnp.atleast_2d(voxels)
         voxels, invalid = self._cull(voxels, do_attrs=None, return_invalid=True)
 
+        voxshape_minus_ones = jnp.ones(voxels.shape[0], dtype=jnp.uint32) * -1
+        carry = (voxels, voxshape_minus_ones, voxshape_minus_ones.astype(jnp.float32))
+
         def scan_func(carry, vox_attr):
-            self_vox, self_attr = vox_attr
+            seeking_voxels, seek_vox_idx, seek_vox_attr = carry
+            scanning_idx, scanning_vox, scanning_attr = vox_attr
 
-            seek_vox, attr_to_return = carry
+            is_same_vox_mask = jnp.all(seeking_voxels == scanning_vox, axis=1).astype(jnp.uint32)
+            seek_vox_idx = seek_vox_idx * (1-is_same_vox_mask) + (jnp.ones_like(seek_vox_idx) * scanning_idx) * is_same_vox_mask
+            seek_vox_attr = seek_vox_attr * (1-is_same_vox_mask) + (jnp.ones_like(seek_vox_attr) * scanning_attr) * is_same_vox_mask
 
-            found_seek_vox = jnp.all(seek_vox == self_vox).astype(jnp.uint8)
+            return (seeking_voxels, seek_vox_idx, seek_vox_attr), 1
 
-            attr_to_return = self_attr * found_seek_vox + attr_to_return * (1-found_seek_vox)
-            return (seek_vox, attr_to_return), 1
+        (_, seek_vox_idx, seek_vox_attr), _ = jax.lax.scan(scan_func, carry, (jnp.arange(self.voxels.shape[0], dtype=jnp.uint32), self.voxels, self.attrs))
 
-        def seek_one_input_voxel(self, input_vox):
-            return jax.lax.scan(scan_func, (input_vox, 0), (self.voxels, self.attrs))[0][-1]
+        seek_vox_idx = (-1) * invalid + seek_vox_idx * (1-invalid)  # technically don't need to do this
+        seek_vox_attr = (-1) * invalid + seek_vox_attr * (1-invalid)
+        return seek_vox_idx, seek_vox_attr
 
-        returns = jax.vmap(functools.partial(seek_one_input_voxel, self))(voxels)
-        returns = (-1) * invalid + returns * (1-invalid)  # technically don't need to do this
-        return returns
+    @jax.jit
+    def is_voxel_set(self, voxels) -> jnp.ndarray:
+        return self.find(voxels)[-1]
+
 
     def _tree_flatten(self):
         children, aux_data = super()._tree_flatten()
@@ -413,7 +492,7 @@ class VoxelList(_VoxelCollection):
         if attrmanager is not None:
             if isinstance(attrmanager, AttrManager):
                 assert isinstance(attrmanager, AttrManager)
-                new_colors = attrmanager.get_attrvals_for_attrkeys(attrs)
+                new_colors = attrmanager.get_attrvals_for_attrkeys(attrs, (0,0,0))
             else:
                 import matplotlib
                 if isinstance(attrmanager, matplotlib.colors.Colormap):
@@ -424,23 +503,9 @@ class VoxelList(_VoxelCollection):
                     new_colors = cmap(attrs)[:,:-1]
                 else:
                     raise NotImplementedError()
-        else:
-            def attr_to_rgb(value):
-                """Map an int to an RGB color."""
-                value_should_be_black = (value == 1).astype(jnp.float32)
-                black_color = jnp.array([0, 0, 0])
 
-                key = jax.random.PRNGKey(value)
-                random_color = jax.random.uniform(key, (3,))
-                set_to_black = black_color * value_should_be_black + (1-value_should_be_black) * (random_color)
+            pcd_new.colors = o3d.utility.Vector3dVector(new_colors)
 
-                need_to_flip = jnp.logical_and(jnp.all(set_to_black == black_color), jnp.logical_not(value_should_be_black)).astype(jnp.float32)
-                return set_to_black * (1-need_to_flip) + need_to_flip * jax.random.uniform(jax.random.PRNGKey(0), (3,))
-            import numpy as np
-            new_colors = np.array(jax.vmap(attr_to_rgb)(attrs))
-            (attrs == 1).astype(jnp.float32)
-
-        pcd_new.colors = o3d.utility.Vector3dVector(new_colors)
         new_grid = o3d.geometry.VoxelGrid.create_from_point_cloud_within_bounds(pcd_new, voxel_size=self.voxel_size, min_bound=self.minbound, max_bound=self.maxbound)
         return new_grid
 
@@ -462,7 +527,7 @@ class VoxelList(_VoxelCollection):
         else:
             attrs = None
 
-        voxlist = voxlist.add_voxel(voxels=indices, attrs=attrs)
+        voxlist = voxlist.set_voxel(voxels=indices, attrs=attrs)
 
         if import_attrs is not None and import_attrs and return_attrmanager is not None and return_attrmanager:
             return voxlist, color_dict
@@ -500,7 +565,7 @@ if __name__ == '__main__':
 
         og_voxel_grid = voxgrid.to_open3d()
 
-        print(compare_grids(og_voxel_grid, new_voxel_grid))
+        assert compare_grids(og_voxel_grid, new_voxel_grid)
 
     def test_display():
         voxgrid, attr_mapping = VoxelGrid.from_open3d(o3d_voxelgrid_from_point_cloud, return_attrmanager=True)
@@ -509,17 +574,65 @@ if __name__ == '__main__':
         inner_grid = inner_grid.at[:,0,:].set(1)
         voxgrid = voxgrid.set_grid(inner_grid)
 
-
-
         #voxgrid = voxgrid.add_voxel()
 
         import matplotlib.pyplot as plt
-        attr_mapping = None #plt.get_cmap("gist_rainbow") # values to try: attr_mapping, None, and a colormap
+        attr_mapping = attr_mapping #plt.get_cmap("gist_rainbow") # values to try: attr_mapping, None, and a colormap
 
         voxgrid.display_as_o3d(attr_mapping)
 
+    def test_some_io():
+        voxlist = VoxelList.build_from_bounds(
+            minbound=jnp.array([-0.5, 1.0, -2.5]),
+            maxbound=jnp.array([1.0, 10.0, 0.0]),
+            voxel_size=0.05,
+        )
+
+        point = jnp.array([0.0, 5.0, -1.0])
+        voxel_indices_1 = voxlist.point_to_voxel(point)
+        #print(voxel_indices_1)  # Output: [10, 80, 30] (example)
+
+        point = voxlist.minbound - 1
+        voxel_indices_2 = voxlist.point_to_voxel(point)
+        #print(voxel_indices_2)  # Output: [10, 80, 30] (example)
+
+        voxels = jnp.vstack([voxel_indices_1, voxel_indices_2])
+        voxlist = voxlist.set_voxel(voxels, jnp.array([2, 3]))
+
+        assert jnp.all(voxlist.is_voxel_set(voxels) == jnp.array([2, -1]))
+        assert jnp.all(voxlist.is_point_set(voxlist.minbound - 1) == -1)
+
+        voxlist = voxlist.set_voxel(voxels, jnp.array([23, 3]))
+        assert jnp.all(voxlist.is_voxel_set(voxels) == jnp.array([23, -1]))
+
+        #voxlist = voxlist.deduplicate()
+
+
+        voxel_grid = voxlist.to_voxelgrid()
+        # exit()
+
+        #voxel_grid = voxel_grid.to_voxellist(10)
+
+        assert jnp.all(voxel_grid.is_voxel_set(jnp.array([11, 81, 291])) == -1)
+
+        #print())  # should be -1
+
+        # voxel_grid = voxel_grid.to_voxelgrid()
+
+        voxel_grid = voxel_grid.set_point(jnp.array([0.7, 7.0, -1.0]), jnp.array([28]))
+
+        # todo how do i ensure
+        assert jnp.all(voxel_grid.is_voxel_set(voxel_indices_1) == 23)
+        assert jnp.all(voxel_grid.is_point_set(jnp.array([0.7, 7.0, -1.0])) == 28)
+
+        voxel_grid = voxel_grid.del_point(jnp.array([0.7, 7.0, -1.0]))
+
+        #print(voxel_grid.voxel_to_point(voxel_indices_1))
+        #print(voxel_grid.voxel_to_8points(voxel_indices_1))
+
     #test_o3d_io()
-    test_display()
+    #test_display()
+    test_some_io()
 
 
     exit()
@@ -527,45 +640,7 @@ if __name__ == '__main__':
 
 
 
-    voxel_grid = VoxelList.build_from_bounds(
-        minbound=jnp.array([-0.5, 1.0, -2.5]),
-        maxbound=jnp.array([1.0, 10.0, 0.0]),
-        voxel_size=0.05,
-    )
-
-    point = jnp.array([0.0, 5.0, -1.0])
-    voxel_indices_1 = voxel_grid.point_to_voxel(point)
-    print(voxel_indices_1)  # Output: [10, 80, 30] (example)
-
-    point = voxel_grid.minbound - 1
-    voxel_indices_2 = voxel_grid.point_to_voxel(point)
-    print(voxel_indices_2)  # Output: [10, 80, 30] (example)
-
-
-    voxels = jnp.vstack([voxel_indices_1, voxel_indices_2])
-    voxel_grid = voxel_grid.add_voxel(voxels, jnp.array([2,3]))
-
-    print(voxel_grid.is_voxel_set(voxels))  # should be [2, -1]
-
-    print(voxel_grid.is_point_set(voxel_grid.minbound-1))   # should be -1
-
-    voxel_grid = voxel_grid.to_voxelgrid()
-    #exit()
-
-    voxel_grid = voxel_grid.to_voxellist(10)
-
-
-    print(voxel_grid.is_voxel_set(jnp.array([11,81,291])))  # should be -1
-
-    #voxel_grid = voxel_grid.to_voxelgrid()
-
-    voxel_grid = voxel_grid.add_point(jnp.array([0.7, 7.0, -1.0]), jnp.array([28]))
-    print(voxel_grid.is_voxel_set(voxel_indices_1)) # should be 2
-    print(voxel_grid.is_point_set(jnp.array([0.7, 7.0, -1.0]))) # should be 28
-
-
-    print(voxel_grid.voxel_to_point(voxel_indices_1))
-    print(voxel_grid.voxel_to_8points(voxel_indices_1))
+    
 
     import open3d as o3d
     o3d_vox = voxel_grid.to_open3d()
