@@ -131,7 +131,8 @@ class _VoxelCollection:
         raise NotImplementedError()
 
     def del_voxel(self, voxels):
-        raise NotImplementedError()
+        voxels = jnp.atleast_2d(voxels)
+        return self.set_voxel(voxels, attrs=jnp.zeros(voxels.shape[0]))
 
     def del_point(self, points):
         points = jnp.atleast_2d(points)
@@ -267,7 +268,7 @@ class VoxelGrid(_VoxelCollection):
 
         voxcol_information = self.to_voxcol()  # VoxelGrid.build_from_voxcol()#.add_voxel(self.voxels, self.attrs)
         voxlist = VoxelList.build_from_voxcol(voxcol_information)
-        return voxlist.replace(voxels=voxels, attrs=attrs)# not calling voxlist.add_voxel(voxels, attrs) because this is faster (things are already culled)
+        return voxlist.set_voxel(voxels, attrs)# not calling voxlist.add_voxel(voxels, attrs) because this is faster (things are already culled)
 
     def to_voxelgrid(self):
         return self
@@ -278,10 +279,6 @@ class VoxelGrid(_VoxelCollection):
         voxels, attrs = self._cull(voxels, attrs, do_attrs=True)
         new_grid = self._grid.at[voxels[:,0], voxels[:,1], voxels[:,2]].set(attrs)
         return self.replace(_grid=new_grid)
-
-    def del_voxel(self, voxels):
-        voxels = jnp.atleast_2d(voxels)
-        return self.set_voxel(voxels, attrs=jnp.zeros(voxels.shape[0]))
 
     @jax.jit
     def is_voxel_set(self, voxels):
@@ -348,6 +345,7 @@ class VoxelList(_VoxelCollection):
         # note: this does NOT delete old voxels
         # so the REAL information is the LAST voxel found in the list
         # this is because delete indices is a bit messy in jax, but appending is easy/cheap
+        # I repeat: need to take into account that THE LAST INFO IN selt.voxels and self.attrs is the real, good, info!
         voxels = jnp.atleast_2d(voxels)
 
         #self = self.del_voxel(voxels)
@@ -377,9 +375,6 @@ class VoxelList(_VoxelCollection):
 #    @functools.partial(jax.jit, static_argnames=)
     @jax.jit
     def to_voxelgrid(self) -> VoxelGrid:
-        voxcol_information = self.to_voxcol() #VoxelGrid.build_from_voxcol()#.add_voxel(self.voxels, self.attrs)
-        voxgrid = VoxelGrid.build_from_voxcol(voxcol_information)
-
         # this ensures that the LAST information is the one that is actually taken into account.
         # So this basically does "self.deduplication" on the fly,
         # except it doesnt remove voxels that are set to 0, because they don't matter since the VoxelGrid has all-0
@@ -397,27 +392,13 @@ class VoxelList(_VoxelCollection):
         rescued_voxels = killed_voxels.at[idxs].set(original_voxels[idxs])
         rescued_attrs = killed_attrs.at[idxs].set(original_attrs[idxs])
 
+        voxcol_information = self.to_voxcol()
+        voxgrid = VoxelGrid.build_from_voxcol(voxcol_information)
         return voxgrid.set_voxel(rescued_voxels, rescued_attrs)
 
     #@property
     def _error_pad(self):
         return self.set_voxel(self.padded_error_index_array, -1)
-
-    def del_voxel(self, voxels):
-        voxels = jnp.atleast_2d(voxels)
-        idxs, attrs = self.find(voxels)
-
-        # janky but it works...
-        self = self._error_pad()
-        selfvoxels = self.voxels
-        selfattrs = self.attrs
-
-        selfvoxels = selfvoxels.at[idxs].set(self.padded_error_index_array)
-        selfattrs = selfattrs.at[idxs].set(0)
-
-        return self.replace(
-            voxels=selfvoxels[:-1], attrs=selfattrs[:-1]
-        )
 
     def find(self, voxels):
         # returns index and attr of voxel
@@ -426,7 +407,7 @@ class VoxelList(_VoxelCollection):
         voxels, invalid = self._cull(voxels, do_attrs=None, return_invalid=True)
 
         voxshape_minus_ones = jnp.ones(voxels.shape[0], dtype=jnp.uint32) * -1
-        carry = (voxels, voxshape_minus_ones, voxshape_minus_ones.astype(jnp.float32))
+        carry = (voxels, voxshape_minus_ones, jnp.zeros_like(voxshape_minus_ones,dtype=jnp.float32))
 
         def scan_func(carry, vox_attr):
             seeking_voxels, seek_vox_idx, seek_vox_attr = carry
@@ -623,7 +604,16 @@ if __name__ == '__main__':
 
         # todo how do i ensure
         assert jnp.all(voxel_grid.is_voxel_set(voxel_indices_1) == 23)
+
+        voxel_grid = voxel_grid.del_voxel(voxel_indices_1)
+        assert jnp.all(voxel_grid.is_voxel_set(voxel_indices_1) == 0)
+        assert jnp.all(voxel_grid.to_voxellist().is_voxel_set(voxel_indices_1) == 0)    # asserts that voxellist returns 0 when stuff is not set
+
         assert jnp.all(voxel_grid.is_point_set(jnp.array([0.7, 7.0, -1.0])) == 28)
+
+        voxellist = voxel_grid.to_voxellist()
+        voxellist = voxellist.del_point(jnp.array([0.7, 7.0, -1.0]))
+        assert jnp.all(voxellist.is_point_set(jnp.array([0.7, 7.0, -1.0])) == 0)
 
         voxel_grid = voxel_grid.del_point(jnp.array([0.7, 7.0, -1.0]))
 
