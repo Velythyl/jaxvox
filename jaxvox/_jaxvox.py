@@ -5,6 +5,8 @@ import dataclasses
 import functools
 from dataclasses import dataclass
 from typing import Tuple, Union
+
+import math
 from typing_extensions import Self, Type
 
 import jax
@@ -12,9 +14,9 @@ import jax.experimental
 import jax.lax
 from jax import numpy as jnp
 
-def indexarr2tup(arr: jnp.ndarray) -> Tuple[int, int, int]:
+def indexarr2tup(arr: jnp.ndarray, type) -> Tuple:
     # NOT JITTABLE!
-    return int(arr[0]), int(arr[1]), int(arr[2])
+    return type(arr[0]), type(arr[1]), type(arr[2])
 
 
 
@@ -22,13 +24,21 @@ def indexarr2tup(arr: jnp.ndarray) -> Tuple[int, int, int]:
 
 @dataclass
 class VoxCol:
-    minbound: jnp.ndarray
-    maxbound: jnp.ndarray
+    _minbound: Tuple[float, float, float] #jnp.ndarray
+    _maxbound: Tuple[float, float, float] #jnp.ndarray
 
     padded_grid_dim: int
     real_grid_shape: Tuple[int, int, int]
     padded_grid_shape: Tuple[int, int, int]
     voxel_size: float
+
+    @property
+    def minbound(self) -> jnp.ndarray:
+        return jnp.array(self._minbound)
+
+    @property
+    def maxbound(self) -> jnp.ndarray:
+        return jnp.array(self._maxbound)
 
     @property
     def padded_error_index_array(self) -> jnp.array:
@@ -45,8 +55,8 @@ class VoxCol:
     def to_voxcol(self) -> VoxCol:
         # useful for subclasses
         return VoxCol(
-            minbound=self.minbound,
-            maxbound=self.maxbound,
+            _minbound=self._minbound,
+            _maxbound=self._maxbound,
             padded_grid_dim=self.padded_grid_dim,
             real_grid_shape=self.real_grid_shape,
             padded_grid_shape=self.padded_grid_shape,
@@ -58,15 +68,15 @@ class VoxCol:
         # Compute the grid dimensionsreal_grid_shape
         real_grid_shape = jnp.ceil((maxbound - minbound) / voxel_size).astype(int)
 
-        undo_pad_slicer = indexarr2tup(real_grid_shape)
+        undo_pad_slicer = indexarr2tup(real_grid_shape, int)
         min_grid_dim = int(jnp.argmax(real_grid_shape))
 
         padded_grid_shape = real_grid_shape.at[min_grid_dim].set(real_grid_shape[min_grid_dim] + 1)
-        padded_grid_shape = indexarr2tup(padded_grid_shape)
+        padded_grid_shape = indexarr2tup(padded_grid_shape, int)
 
         return VoxCol(
-            minbound=minbound,
-            maxbound=maxbound,
+            _minbound=indexarr2tup(minbound, float),
+            _maxbound=indexarr2tup(maxbound, float),
             padded_grid_dim=min_grid_dim,
             real_grid_shape=undo_pad_slicer,
             padded_grid_shape=padded_grid_shape,
@@ -78,7 +88,7 @@ class VoxCol:
         # in subclasses, create subclass using info from voxcol
         raise NotImplementedError()
 
-    @jax.jit
+    #@jax.jit
     def point_to_voxel(self, points) -> jnp.ndarray:
         @jax.jit
         def _point_to_voxel(self, point):
@@ -187,8 +197,8 @@ class VoxCol:
                 return voxels, invalid
 
     def _tree_flatten(self):
-        children = (self.minbound, self.maxbound)  # arrays / dynamic values
-        aux_data = (self.padded_grid_dim, self.real_grid_shape, self.padded_grid_shape, self.voxel_size)  # hashable static values
+        children = tuple()  # arrays / dynamic values
+        aux_data = (self._minbound, self._maxbound, self.padded_grid_dim, self.real_grid_shape, self.padded_grid_shape, self.voxel_size)  # hashable static values
         return children, aux_data
 
     def display_as_o3d(self, attrmanager=None) -> None:
@@ -209,11 +219,10 @@ class VoxCol:
 
     @classmethod
     def _tree_unflatten(cls, aux_data, children):
-        minbound, maxbound = children
-        padded_grid_dim, real_grid_shape, padded_grid_shape, voxel_size = aux_data
+        minbound, maxbound, padded_grid_dim, real_grid_shape, padded_grid_shape, voxel_size = aux_data
         return cls(
-            minbound=minbound,
-            maxbound=maxbound,
+            _minbound=minbound,
+            _maxbound=maxbound,
             padded_grid_dim=padded_grid_dim,
             real_grid_shape=real_grid_shape,
             padded_grid_shape=padded_grid_shape,
@@ -237,11 +246,18 @@ class VoxCol:
 
     @property
     def _raycasting_worst_case_num_steps(self):
-        return jnp.linalg.norm(self.maxbound - self.minbound) / self.voxel_size  # worst possible case
-        # todo add this to the flatteners
+        diff = (
+            self._maxbound[0] - self._minbound[0],
+            self._maxbound[1] - self._minbound[1],
+            self._maxbound[2] - self._minbound[2]
+        )
+        diff = (diff[0] ** 2, diff[1] ** 2, diff[2] ** 2)
+        summed = diff[0] + diff[1] + diff[2]
+        squared = math.sqrt(summed)
+        return squared / self.voxel_size
 
-    #@jax.jit
-    def raycast(self, x_points, y_points=None):
+    @jax.jit
+    def raycast(self, x_points, y_points=None, attrs=None):
         if len(x_points.shape) == 4:
             if y_points is None:
                 y_points = x_points[:,1]
@@ -254,6 +270,10 @@ class VoxCol:
         if len(x_points.shape) == 3:
             x_points = x_points.reshape(x_points.shape[0] * x_points.shape[1], 3)
             y_points = y_points.reshape(y_points.shape[0] * y_points.shape[1], 3)
+
+        if attrs is None:
+            attrs = 1
+            # attrs should be 1 OR have one value for each path TODO
 
 
         x_centers = self.voxel_to_point(self.point_to_voxel(x_points))
@@ -356,7 +376,7 @@ class VoxGrid(VoxCol):
     @classmethod
     def build_from_voxcol(cls, voxcol: VoxCol) -> Self:
         # we want the array to be 0's everywhere where it's possible to set voxels, and -1 in the padding
-        grid = jnp.zeros(voxcol.real_grid_shape) * -1
+        grid = jnp.zeros(voxcol.real_grid_shape)
         #grid = grid.at[0:voxcol.real_grid_shape[0],0:voxcol.real_grid_shape[1],0:voxcol.real_grid_shape[2]].set(0)
         return VoxGrid(grid=grid, **vars(voxcol))
 
@@ -413,17 +433,17 @@ class VoxGrid(VoxCol):
 
     def _tree_flatten(self):
         children, aux_data = super()._tree_flatten()
-        children = (*children, self.grid)
+        children = (self.grid,)
         return children, aux_data
 
     @classmethod
     def _tree_unflatten(cls, aux_data, children):
-        minbound, maxbound, _grid = children
-        padded_grid_dim, real_grid_shape, padded_grid_shape, voxel_size = aux_data
+        _grid = children[0]
+        minbound, maxbound, padded_grid_dim, real_grid_shape, padded_grid_shape, voxel_size = aux_data
         return cls(
             grid=_grid,
-            minbound=minbound,
-            maxbound=maxbound,
+            _minbound=minbound,
+            _maxbound=maxbound,
             padded_grid_dim=padded_grid_dim,
             real_grid_shape=real_grid_shape,
             padded_grid_shape=padded_grid_shape,
@@ -550,18 +570,18 @@ class VoxList(VoxCol):
 
     def _tree_flatten(self):
         children, aux_data = super()._tree_flatten()
-        children = (*children, self.voxels, self.attrs)
+        children = (self.voxels, self.attrs)
         return children, aux_data
 
     @classmethod
     def _tree_unflatten(cls, aux_data, children):
-        minbound, maxbound, voxels, attrs = children
-        padded_grid_dim, real_grid_shape, padded_grid_shape, voxel_size = aux_data
+        voxels, attrs = children
+        minbound, maxbound, padded_grid_dim, real_grid_shape, padded_grid_shape, voxel_size = aux_data
         return cls(
             voxels=voxels,
             attrs=attrs,
-            minbound=minbound,
-            maxbound=maxbound,
+            _minbound=minbound,
+            _maxbound=maxbound,
             padded_grid_dim=padded_grid_dim,
             real_grid_shape=real_grid_shape,
             padded_grid_shape=padded_grid_shape,
