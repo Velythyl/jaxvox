@@ -235,6 +235,108 @@ class VoxCol:
         minbound = o3d_grid.get_min_bound()
         return VoxCol.build_from_bounds(minbound=minbound, maxbound=maxbound, voxel_size=o3d_grid.voxel_size)
 
+    @property
+    def _raycasting_worst_case_num_steps(self):
+        return jnp.linalg.norm(self.maxbound - self.minbound) / self.voxel_size  # worst possible case
+        # todo add this to the flatteners
+
+    #@jax.jit
+    def raycast(self, x_points, y_points=None):
+        if len(x_points.shape) == 4:
+            if y_points is None:
+                y_points = x_points[:,1]
+                x_points = x_points[:,0]
+
+        if len(x_points.shape) == 3 and y_points is None:
+            y_points = x_points[1]
+            x_points = x_points[0]
+
+        if len(x_points.shape) == 3:
+            x_points = x_points.reshape(x_points.shape[0] * x_points.shape[1], 3)
+            y_points = y_points.reshape(y_points.shape[0] * y_points.shape[1], 3)
+
+
+        x_centers = self.voxel_to_point(self.point_to_voxel(x_points))
+        y_centers = self.voxel_to_point(self.point_to_voxel(y_points))
+
+        def _calc_ray(self, x, y):
+            direction = y - x
+            direction = direction / jnp.linalg.norm(direction)
+
+            distance = jnp.linalg.norm(y - x)
+            distance_per_step = distance / self._raycasting_worst_case_num_steps
+            steps = jnp.arange(self._raycasting_worst_case_num_steps + 1) * distance_per_step
+
+            def mul(direction, step):
+                return direction * step
+
+            step_points = jax.vmap(functools.partial(mul, direction))(steps)  # * direction
+            return step_points + x
+
+        rays = jax.vmap(functools.partial(_calc_ray, self))(x_centers, y_centers)
+
+        ray_attrs = jnp.ones((x_points.shape[0], rays.shape[1]))
+        #ray_attrs = ray_attrs * attrs[:, None]
+
+        rays = rays.reshape(x_points.shape[0] * rays.shape[1], 3)
+        ray_attrs = ray_attrs.reshape(x_points.shape[0] * ray_attrs.shape[1])
+        return self.set_point(rays, ray_attrs)
+
+
+    @jax.jit
+    def __raycast(self, x_points, y_points=None, attrs=None):
+        if y_points is None:
+            y_points = x_points[1]
+            x_points = x_points[0]
+
+        if len(x_points.shape) == 2:
+            x_points = x_points[None]
+            y_points = y_points[None]
+
+        def _raycast_one(self, x_points, y_points=None, attrs=None):
+
+            if attrs is None:
+                attrs = jnp.ones(x_points.shape[0])
+
+            x_centers = self.voxel_to_point(self.point_to_voxel(x_points))
+            y_centers = self.voxel_to_point(self.point_to_voxel(y_points))
+
+            def _calc_ray(self, x, y):
+                direction = y - x
+                direction = direction / jnp.linalg.norm(direction)
+
+                distance = jnp.linalg.norm(y - x)
+                distance_per_step = distance / self._raycasting_worst_case_num_steps
+                steps = jnp.arange(self._raycasting_worst_case_num_steps + 1) * distance_per_step
+
+                def mul(direction, step):
+                    return direction * step
+
+                step_points = jax.vmap(functools.partial(mul, direction))(steps)  # * direction
+                return step_points + x
+
+            rays = jax.vmap(functools.partial(_calc_ray, self))(x_centers, y_centers)
+
+            ray_attrs = jnp.ones((x_points.shape[0], rays.shape[1]))
+            ray_attrs = ray_attrs * attrs[:, None]
+
+            rays = rays.reshape(x_points.shape[0] * rays.shape[1], 3)
+            ray_attrs = ray_attrs.reshape(x_points.shape[0] * ray_attrs.shape[1])
+            return rays, ray_attrs
+            return self.set_point(rays, ray_attrs)
+
+        #x_points = jnp.atleast_3d(x_points)
+        #y_points = jnp.atleast_3d(y_points)
+
+        rays, rays_attrs = jax.vmap(functools.partial(_raycast_one, self))( x_points, y_points, attrs)
+
+        rays = rays.squeeze()
+        rays_attrs = rays_attrs.squeeze()
+        return self.set_point(rays, rays_attrs)
+
+
+
+
 jax.tree_util.register_pytree_node(VoxCol,
                                    VoxCol._tree_flatten,
                                    VoxCol._tree_unflatten)
@@ -282,9 +384,13 @@ class VoxGrid(VoxCol):
     def to_voxelgrid(self) -> Self:
         return self
 
-    @jax.jit
+    #@jax.jit
     def set_voxel(self, voxels: jnp.array, attrs=None) -> Self:
         voxels = jnp.atleast_2d(voxels)
+
+        if attrs is None:
+            attrs = jnp.ones(voxels.shape[0])
+
         return self.at[voxels[:, 0], voxels[:, 1], voxels[:, 2]].set(attrs)
 
     @property
@@ -485,7 +591,7 @@ class VoxList(VoxCol):
         if attrmanager is not None:
             if isinstance(attrmanager, AttrManager):
                 assert isinstance(attrmanager, AttrManager)
-                new_colors = attrmanager.get_attrvals_for_attrkeys(attrs, (0,0,0))
+                new_colors = attrmanager.get_attrvals_for_attrkeys(attrs)
             else:
                 import matplotlib
                 if isinstance(attrmanager, matplotlib.colors.Colormap):

@@ -6,9 +6,9 @@ from jaxvox._jaxvox import VoxGrid, VoxList
 if __name__ == '__main__':
     import open3d as o3d
     import json
-    pcd = o3d.io.read_point_cloud("pcd.pcd")
+    pcd = o3d.io.read_point_cloud("./data/0/pcd.pcd")
 
-    with open("other_info.json", "r") as f:
+    with open("./data/0/other_info.json", "r") as f:
         other_info = json.loads(f.read())
 
     o3d_voxelgrid_from_point_cloud = o3d.geometry.VoxelGrid.create_from_point_cloud(pcd, 0.02)
@@ -34,6 +34,7 @@ if __name__ == '__main__':
     def test_display():
         voxgrid, attr_mapping = VoxGrid.from_open3d(o3d_voxelgrid_from_point_cloud, return_attrmanager=True)
 
+        attr_mapping.set_default_value((255,0,0))
 
         def temp(voxgrid):
             #inner_grid = voxgrid.grid
@@ -42,6 +43,8 @@ if __name__ == '__main__':
             return voxgrid
         voxgrid = jax.jit(temp)(voxgrid)
 
+        for path in other_info["path_pts"]:
+            voxgrid = voxgrid.set_point(path)
 
         #voxgrid = voxgrid.add_voxel()
 
@@ -126,8 +129,8 @@ if __name__ == '__main__':
 
     #test_some_io()
     #test_o3d_io()
-    test_display_voxlist()
-    #test_display()
+    #test_display_voxlist()
+    test_display()
 
 
     exit()
