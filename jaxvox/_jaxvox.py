@@ -239,14 +239,12 @@ jax.tree_util.register_pytree_node(VoxCol,
                                    VoxCol._tree_flatten,
                                    VoxCol._tree_unflatten)
 
+import voxgrid_at_utils
+import voxlist_at_utils
 
 @dataclass
 class VoxGrid(VoxCol):
-    _grid: jnp.ndarray
-
-    @property
-    def grid(self) -> jnp.array:
-        return self._grid[0:self.real_grid_shape[0], 0:self.real_grid_shape[1], 0:self.real_grid_shape[2]]
+    grid: jnp.ndarray
 
     @classmethod
     def build_from_bounds(cls, minbound: jnp.array, maxbound:jnp.array, voxel_size: float=0.05) -> Self:
@@ -256,15 +254,19 @@ class VoxGrid(VoxCol):
     @classmethod
     def build_from_voxcol(cls, voxcol: VoxCol) -> Self:
         # we want the array to be 0's everywhere where it's possible to set voxels, and -1 in the padding
-        grid = jnp.ones(voxcol.padded_grid_shape) * -1
-        grid = grid.at[0:voxcol.real_grid_shape[0],0:voxcol.real_grid_shape[1],0:voxcol.real_grid_shape[2]].set(0)
-        return VoxGrid(_grid=grid, **vars(voxcol))
+        grid = jnp.zeros(voxcol.real_grid_shape) * -1
+        #grid = grid.at[0:voxcol.real_grid_shape[0],0:voxcol.real_grid_shape[1],0:voxcol.real_grid_shape[2]].set(0)
+        return VoxGrid(grid=grid, **vars(voxcol))
 
+#TODO can we get away from the error slice by using proper .at functionality?
     @jax.jit
     def set_grid(self, grid: jnp.array) -> Self:
         # grid of unpadded size
         grid = grid.clip(0, jnp.inf)
-        new__grid = self._grid.at[0:self.real_grid_shape[0], 0:self.real_grid_shape[1], 0:self.real_grid_shape[2]].set(grid)
+        new__grid = self.grid.at[0:self.real_grid_shape[0], 0:self.real_grid_shape[1], 0:self.real_grid_shape[2]].set(
+            grid[0:self.real_grid_shape[0], 0:self.real_grid_shape[1], 0:self.real_grid_shape[2]],
+            mode="drop"
+        )
         return self.replace(_grid=new__grid)
 
     def to_voxellist(self, size: int=None) -> VoxList:
@@ -280,19 +282,19 @@ class VoxGrid(VoxCol):
     def to_voxelgrid(self) -> Self:
         return self
 
-    #@jax.jit
+    @jax.jit
     def set_voxel(self, voxels: jnp.array, attrs=None) -> Self:
         voxels = jnp.atleast_2d(voxels)
-        voxels, attrs = self._cull(voxels, attrs, do_attrs=True)
-        new_grid = self._grid.at[voxels[:,0], voxels[:,1], voxels[:,2]].set(attrs)
-        return self.replace(_grid=new_grid)
+        return self.at[voxels[:, 0], voxels[:, 1], voxels[:, 2]].set(attrs)
+
+    @property
+    def at(self):
+        return voxgrid_at_utils._VoxGridIndexUpdateHelper(self)
 
     @jax.jit
     def is_voxel_set(self, voxels: jnp.array) -> jnp.array:
         voxels = jnp.atleast_2d(voxels)
-        voxels = self._cull(voxels, do_attrs=None)
-        # cull shoots bad voxels to the invalid slice, so handles invalidity implicitly
-        return self._grid[voxels[:,0], voxels[:,1], voxels[:,2]].squeeze()
+        return self.at[voxels[:,0], voxels[:,1], voxels[:,2]].get()
 
     @classmethod
     def from_open3d(cls, o3d_grid, import_attrs=True, return_attrmanager=False) -> Self:
@@ -305,7 +307,7 @@ class VoxGrid(VoxCol):
 
     def _tree_flatten(self):
         children, aux_data = super()._tree_flatten()
-        children = (*children, self._grid)
+        children = (*children, self.grid)
         return children, aux_data
 
     @classmethod
@@ -313,7 +315,7 @@ class VoxGrid(VoxCol):
         minbound, maxbound, _grid = children
         padded_grid_dim, real_grid_shape, padded_grid_shape, voxel_size = aux_data
         return cls(
-            _grid=_grid,
+            grid=_grid,
             minbound=minbound,
             maxbound=maxbound,
             padded_grid_dim=padded_grid_dim,
@@ -408,7 +410,7 @@ class VoxList(VoxCol):
 
     def find(self, voxels) -> Tuple[jnp.array, jnp.array]:
         # returns index and attr of voxel
-        # if voxel is not found, both index and attr will be -1
+        # if voxel is not found, index will be -1, but attr will be 0 if valid and -1 if invalid
         voxels = jnp.atleast_2d(voxels)
         voxels, invalid = self._cull(voxels, do_attrs=None, return_invalid=True)
 
@@ -435,6 +437,10 @@ class VoxList(VoxCol):
     def is_voxel_set(self, voxels: jnp.array) -> jnp.ndarray:
         return self.find(voxels)[-1]
 
+    @property
+    def at(self):
+        raise NotImplementedError()
+        return voxlist_at_utils._VoxListIndexUpdateHelper(self)
 
     def _tree_flatten(self):
         children, aux_data = super()._tree_flatten()

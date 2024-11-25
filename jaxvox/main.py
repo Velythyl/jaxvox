@@ -34,9 +34,13 @@ if __name__ == '__main__':
     def test_display():
         voxgrid, attr_mapping = VoxGrid.from_open3d(o3d_voxelgrid_from_point_cloud, return_attrmanager=True)
 
-        inner_grid = voxgrid.grid
-        inner_grid = inner_grid.at[:,0,:].set(1)
-        voxgrid = voxgrid.set_grid(inner_grid)
+        def temp(voxgrid):
+            #inner_grid = voxgrid.grid
+            voxgrid = voxgrid.at[:,0,:].set(1)
+            voxgrid.at[:,0,:].get()
+            return voxgrid
+        voxgrid = jax.jit(temp)(voxgrid)
+
 
         #voxgrid = voxgrid.add_voxel()
 
@@ -103,8 +107,8 @@ if __name__ == '__main__':
         #print(voxel_grid.voxel_to_8points(voxel_indices_1))
 
     #test_some_io()
-    test_o3d_io()
-    #test_display()
+    #test_o3d_io()
+    test_display()
 
 
     exit()
