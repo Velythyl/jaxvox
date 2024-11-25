@@ -439,7 +439,7 @@ class VoxList(VoxCol):
 
     @property
     def at(self):
-        raise NotImplementedError()
+        #raise NotImplementedError()
         return voxlist_at_utils._VoxListIndexUpdateHelper(self)
 
     def _tree_flatten(self):

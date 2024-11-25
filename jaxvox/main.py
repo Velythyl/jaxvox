@@ -34,12 +34,30 @@ if __name__ == '__main__':
     def test_display():
         voxgrid, attr_mapping = VoxGrid.from_open3d(o3d_voxelgrid_from_point_cloud, return_attrmanager=True)
 
+
         def temp(voxgrid):
             #inner_grid = voxgrid.grid
             voxgrid = voxgrid.at[:,0,:].set(1)
             voxgrid.at[:,0,:].get()
             return voxgrid
         voxgrid = jax.jit(temp)(voxgrid)
+
+
+        #voxgrid = voxgrid.add_voxel()
+
+        attr_mapping = attr_mapping #plt.get_cmap("gist_rainbow") # values to try: attr_mapping, None, and a colormap
+
+        voxgrid.display_as_o3d(attr_mapping)
+
+    def test_display_voxlist():
+        voxlist, attr_mapping = VoxList.from_open3d(o3d_voxelgrid_from_point_cloud, return_attrmanager=True)
+
+        def temp(voxlist):
+            #inner_grid = voxgrid.grid
+            voxlist = voxlist.at[:,0,:].set(1)
+            voxlist.at[:,0,:].get()
+            return voxlist.to_voxelgrid()
+        voxgrid = jax.jit(temp)(voxlist)
 
 
         #voxgrid = voxgrid.add_voxel()
@@ -108,7 +126,8 @@ if __name__ == '__main__':
 
     #test_some_io()
     #test_o3d_io()
-    test_display()
+    test_display_voxlist()
+    #test_display()
 
 
     exit()

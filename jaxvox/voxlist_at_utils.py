@@ -1,6 +1,10 @@
-from jaxvox.slicer import concretize_index
+import functools
 
+import jax.numpy as jnp
+from jaxvox.slicer import concretize_index
+import jax
 # TODO WIPPPPP
+
 
 
 class _VoxListIndexUpdateHelper:
@@ -31,67 +35,60 @@ class _IndexUpdateRef:
       return self.voxlist.is_voxel_set(self.index)
       #return self.voxlist.grid.at[self.index].get(indices_are_sorted=indices_are_sorted, unique_indices=unique_indices, fill_value=-1, mode="fill")
 
+  def _prep_generic_setter(self):
+      error_padded_voxlist = self.voxlist._error_pad()
+      culled_voxels = error_padded_voxlist._cull(self.index)
+      # now, the OOB voxels are the error_index
+      _, attrs = error_padded_voxlist.find(culled_voxels)
+      # unfortunately, the idxs returned by find are -1 when voxels are not found, even if they are valid
+      # also, to JIT, the return shape must be predictable...
+      return culled_voxels, attrs
+
   def set(self, values):
-      # todo for set and all other setter funcs:
-      # need to make sure all indexes are in the list first
-      # then get the values
-      # then apply the setter
-      # then add them AGAIN, OR replace their attr value if we have the idxs
-      voxels = self.index
-      voxels = self.voxlist
-      idxs, attrs = self.voxlist.find(voxels)
-
-      #attrs.
-
-      return self.voxlist.set_voxel(self.index, values)
-      #new_grid = self.voxlist.grid.at[self.index].set(values=values, indices_are_sorted=indices_are_sorted, unique_indices=unique_indices, mode="drop")
-      #return self.voxlist.replace(grid=new_grid)
+      v,a = self._prep_generic_setter()
+      a = a.at[:].set(values)
+      return self.voxlist.set_voxel(v, a)
 
   def apply(self, func):
-      voxlist = self.voxlist.set_voxel(self.index)
-
-
-      seek_vox_idx, seek_vox_attr = self.voxlist.find(self.index)
-      new_values = seek_vox_attr.at[seek_vox_idx].apply(func)
-      return self.voxlist.replace(attrs=new_values)
-      #values = values.apply(func)
-
-      #new_grid = self.voxlist.grid.at[self.index].apply(func, indices_are_sorted=indices_are_sorted,
-      #                                                  unique_indices=unique_indices, mode="drop")
-      #return self.voxlist.replace(grid=new_grid)
+      v, a = self._prep_generic_setter()
+      a = a.at[:].apply(func)
+      return self.voxlist.set_voxel(v, a)
 
   def add(self, values):
-      seek_vox_idx, seek_vox_attr = self.voxlist.find(self.index)
-      new_values = seek_vox_attr.at[seek_vox_idx].add(values)
-      return self.voxlist.replace(attrs=new_values)
+      v, a = self._prep_generic_setter()
+      a = a.at[:].add(values)
+      return self.voxlist.set_voxel(v, a)
 
-  def multiply(self, values, *, indices_are_sorted=False, unique_indices=False,):
-      new_grid = self.voxlist.grid.at[self.index].multiply(values, indices_are_sorted=indices_are_sorted,
-                                                           unique_indices=unique_indices, mode="drop")
-
-      return self.voxlist.replace(grid=new_grid)
+  def multiply(self, values):
+      v, a = self._prep_generic_setter()
+      a = a.at[:].multiply(values)
+      return self.voxlist.set_voxel(v, a)
   mul = multiply
 
-  def divide(self, values, *, indices_are_sorted=False, unique_indices=False):
-      new_grid = self.voxlist.grid.at[self.index].divide(values, indices_are_sorted=indices_are_sorted,
-                                                         unique_indices=unique_indices, mode="drop")
+  def divide(self, values):
+      v, a = self._prep_generic_setter()
+      a = a.at[:].divide(values)
+      return self.voxlist.set_voxel(v, a)
 
-      return self.voxlist.replace(grid=new_grid)
+  def power(self, values):
+      v, a = self._prep_generic_setter()
+      a = a.at[:].power(values)
+      return self.voxlist.set_voxel(v, a)
 
-  def power(self, values, *, indices_are_sorted=False, unique_indices=False):
-      new_grid = self.voxlist.grid.at[self.index].power(values, indices_are_sorted=indices_are_sorted,
-                                                        unique_indices=unique_indices, mode="drop")
+  def min(self, values):
+      v, a = self._prep_generic_setter()
 
-      return self.voxlist.replace(grid=new_grid)
+      a_done = a.clip(0, jnp.inf).at[:].min(values)
+      is_minus_1_mask = (a == -1).astype(jnp.float32)
 
-  def min(self, values, *, indices_are_sorted=False, unique_indices=False):
-      new_grid = self.voxlist.grid.at[self.index].min(values, indices_are_sorted=indices_are_sorted,
-                                                      unique_indices=unique_indices, mode="drop")
+      a = a * is_minus_1_mask + a_done * (1-is_minus_1_mask)
+      return self.voxlist.set_voxel(v, a)
 
-      return self.voxlist.replace(grid=new_grid)
+  def max(self, values):
+      v, a = self._prep_generic_setter()
 
-  def max(self, values, *, indices_are_sorted=False, unique_indices=False):
-      new_grid = self.voxlist.grid.at[self.index].max(values, indices_are_sorted=indices_are_sorted,
-                                                      unique_indices=unique_indices, mode="drop")
+      a_done = a.at[:].max(values)
+      is_minus_1_mask = (a == -1).astype(jnp.float32)
 
-      return self.voxlist.replace(grid=new_grid)
+      a = a * is_minus_1_mask + a_done * (1 - is_minus_1_mask)
+      return self.voxlist.set_voxel(v, a)

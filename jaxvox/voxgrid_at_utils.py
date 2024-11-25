@@ -57,13 +57,13 @@ class _IndexUpdateRef:
       return self.voxgrid.replace(grid=new_grid)
 
   def min(self, values, *, indices_are_sorted=False, unique_indices=False):
-      new_grid = self.voxgrid.grid.at[self.index].min(values, indices_are_sorted=indices_are_sorted,
+      minned = self.voxgrid.grid.at[self.index].min(values, indices_are_sorted=indices_are_sorted,
                                                       unique_indices=unique_indices, mode="drop")
 
-      return self.voxgrid.replace(grid=new_grid)
+      return minned
 
   def max(self, values, *, indices_are_sorted=False, unique_indices=False):
-      new_grid = self.voxgrid.grid.at[self.index].max(values, indices_are_sorted=indices_are_sorted,
+      maxed = self.voxgrid.grid.at[self.index].max(values, indices_are_sorted=indices_are_sorted,
                                                       unique_indices=unique_indices, mode="drop")
 
-      return self.voxgrid.replace(grid=new_grid)
+      return maxed
