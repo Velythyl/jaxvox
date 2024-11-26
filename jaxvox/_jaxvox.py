@@ -145,6 +145,56 @@ class VoxCol:
     def is_voxel_set(self, voxel) -> jnp.ndarray:
         raise NotImplementedError()
 
+    @functools.partial(jax.jit, static_argnums=(2,3))
+    def voxel_to_neighbours(self, voxel, distance:int=1, include_corners:bool=False):
+        voxel = jnp.atleast_2d(voxel)
+
+        offset_range = jnp.arange(-distance, distance + 1)
+        dx, dy, dz = jnp.meshgrid(offset_range, offset_range, offset_range, indexing="ij")
+        offsets = jnp.stack([dx.ravel(), dy.ravel(), dz.ravel()], axis=1)
+
+        if include_corners:
+            # chebyshev
+            # this is just the full mask, i believe
+            NUM_NEIGHBOURS = offsets.shape[0]
+            MASK = jnp.ones(offsets.shape[0], dtype=jnp.uint32)
+        else:
+            # manhattan
+            NUM_NEIGHBOURS = int(6*distance*(distance+1)/2+1)
+            MASK = jnp.sum(jnp.abs(offsets), axis=1) == distance
+            MASK = MASK + (jnp.sum(jnp.abs(offsets), axis=1) == 0)
+
+        valid_offsets = offsets * MASK.astype(jnp.uint32)[:, None]
+        valid_offset_indices = jnp.nonzero(MASK, size=NUM_NEIGHBOURS,
+                                           fill_value=2 * offsets.shape[0])
+        valid_offsets = valid_offsets[valid_offset_indices]
+
+        def do_each_voxel(valid_offsets, voxel):
+            return voxel + valid_offsets
+
+        neighbours = jax.vmap(functools.partial(do_each_voxel, valid_offsets))(voxel)
+        return neighbours
+
+    @functools.partial(jax.jit, static_argnums=(2, 3))
+    def point_to_neighbours(self, points, distance:int=1, include_corners:bool=False):
+        voxel = self.point_to_voxel(points)
+        return self.voxel_to_neighbours(voxel, distance, include_corners)
+
+    @functools.partial(jax.jit, static_argnums=(3, 4))
+    def set_voxel_neighbours(self, voxels, attrs:int=None, distance:int=1, include_corners:bool=False):
+        neighbours = self.voxel_to_neighbours(voxels, distance, include_corners)
+        neighbours = neighbours.reshape(-1, 3)
+        return self.set_voxel(neighbours, attrs)
+
+    @functools.partial(jax.jit, static_argnums=(3, 4))
+    def set_point_neighbours(self, points, attrs:int=None, distance:int=1, include_corners:bool=False):
+        voxel = self.point_to_voxel(points)
+        return self.set_voxel_neighbours(voxel, attrs, distance, include_corners)
+
+    @jax.jit
+    def empty(self):
+        return self
+
     def del_voxel(self, voxels) -> Self:
         voxels = jnp.atleast_2d(voxels)
         return self.set_voxel(voxels, attrs=jnp.zeros(voxels.shape[0]))
@@ -166,8 +216,8 @@ class VoxCol:
         voxels = self.point_to_voxel(points)  # auto vmap
         return self.is_voxel_set(voxels)
 
-    @jax.jit
-    def _cull(self, voxels, attrs=None, do_attrs=None, return_invalid=None) -> Union[jnp.array, Tuple[jnp.array, jnp.array], Tuple[jnp.array, jnp.array, jnp.array]]:
+    @functools.partial(jax.jit, static_argnums=(3,4))
+    def _cull(self, voxels, attrs=None, return_attrs:bool=False, return_invalid:bool=False) -> Union[jnp.array, Tuple[jnp.array, jnp.array], Tuple[jnp.array, jnp.array, jnp.array]]:
         voxels = jnp.atleast_2d(voxels)
 
         if attrs is None:
@@ -184,17 +234,18 @@ class VoxCol:
 
         voxels, invalid = jax.vmap(transform_invalid)(voxels)
 
-        if do_attrs is not None:
-            attrs = jax.vmap(lambda a, v: -1*v + a*(1-v))(attrs, invalid)
-            if return_invalid is None:
-                return voxels, attrs
-            else:
-                return voxels, attrs, invalid
-        else:
-            if return_invalid is None:
+        if return_attrs is False:
+            if not return_invalid:
                 return voxels
             else:
                 return voxels, invalid
+        else:
+            attrs = jax.vmap(lambda a, v: -1*v + a*(1-v))(attrs, invalid)
+            if not return_invalid:
+                return voxels, attrs
+            else:
+                return voxels, attrs, invalid
+
 
     def _tree_flatten(self):
         children = tuple()  # arrays / dynamic values
@@ -246,6 +297,7 @@ class VoxCol:
 
     @property
     def _raycasting_worst_case_num_steps(self):
+        # disgusting... but we cant use arrays if we want to be static -_-
         diff = (
             self._maxbound[0] - self._minbound[0],
             self._maxbound[1] - self._minbound[1],
@@ -254,53 +306,88 @@ class VoxCol:
         diff = (diff[0] ** 2, diff[1] ** 2, diff[2] ** 2)
         summed = diff[0] + diff[1] + diff[2]
         squared = math.sqrt(summed)
-        return squared / self.voxel_size
+        return int(squared / self.voxel_size)
+
+    def _calc_ray_points_for_pair(self, x, y):
+        direction = y - x
+        direction = direction / jnp.linalg.norm(direction)
+
+        distance = jnp.linalg.norm(y - x)
+        distance_per_step = distance / self._raycasting_worst_case_num_steps
+        steps = jnp.arange(self._raycasting_worst_case_num_steps) * distance_per_step
+
+        def mul(direction, step):
+            return direction * step
+
+        step_points = jax.vmap(functools.partial(mul, direction))(steps)  # * direction
+        step_points = step_points + x
+        return jnp.concatenate([step_points, y[None]], axis=0)
 
     @jax.jit
-    def raycast(self, x_points, y_points=None, attrs=None):
-        if len(x_points.shape) == 4:
-            if y_points is None:
-                y_points = x_points[:,1]
-                x_points = x_points[:,0]
+    def raycast(self, x_points, y_points=None, attrs=None, return_aux: bool=False):
+        if attrs is None:
+            attrs = 1
+        attrs = jnp.atleast_1d(attrs)
 
-        if len(x_points.shape) == 3 and y_points is None:
-            y_points = x_points[1]
-            x_points = x_points[0]
+        if len(x_points.shape) == 4 and y_points is None:
+            y_points = x_points[:,1]
+            x_points = x_points[:,0]
 
-        if len(x_points.shape) == 3:
+            ORIG_POINT_SHAPE = (x_points.shape[0], x_points.shape[1])
+
+            if attrs is not None and len(attrs.shape) == 2:
+                pass
+            else:
+                if attrs.shape[0] == x_points.shape[0]:
+                    attrs = jnp.repeat(attrs[:,None], ORIG_POINT_SHAPE[1], axis=1)
+                else:
+                    attrs = jnp.repeat(attrs[None], ORIG_POINT_SHAPE[0], axis=0)
+
             x_points = x_points.reshape(x_points.shape[0] * x_points.shape[1], 3)
             y_points = y_points.reshape(y_points.shape[0] * y_points.shape[1], 3)
 
-        if attrs is None:
-            attrs = 1
-            # attrs should be 1 OR have one value for each path TODO
+        elif len(x_points.shape) == 3 and y_points is None:
+            y_points = x_points[1]
+            x_points = x_points[0]
 
+            ORIG_POINT_SHAPE = (x_points.shape[0],)
+        else:
+            ORIG_POINT_SHAPE = (x_points.shape[0],)
 
         x_centers = self.voxel_to_point(self.point_to_voxel(x_points))
         y_centers = self.voxel_to_point(self.point_to_voxel(y_points))
 
-        def _calc_ray(self, x, y):
-            direction = y - x
-            direction = direction / jnp.linalg.norm(direction)
+        rays = jax.vmap(self._calc_ray_points_for_pair)(x_centers, y_centers)
 
-            distance = jnp.linalg.norm(y - x)
-            distance_per_step = distance / self._raycasting_worst_case_num_steps
-            steps = jnp.arange(self._raycasting_worst_case_num_steps + 1) * distance_per_step
+        final_attr_shape = jnp.ones((*ORIG_POINT_SHAPE, self._raycasting_worst_case_num_steps+1))
 
-            def mul(direction, step):
-                return direction * step
+        if attrs.shape[0] == 1:
+            final_attrs = attrs * final_attr_shape
+        else:
+            if len(ORIG_POINT_SHAPE) == 2:
+                def attr_mul(a, mat):
+                    return a[:,None] * mat
+            else:
+                def attr_mul(a, mat):
+                    return a * mat
+            final_attrs = jax.vmap(attr_mul)(attrs, final_attr_shape)
 
-            step_points = jax.vmap(functools.partial(mul, direction))(steps)  # * direction
-            return step_points + x
+        ray_voxels = self.point_to_voxel(rays.reshape(rays.shape[0] * rays.shape[1], 3))
+        ray_voxels_attrs = final_attrs.flatten()
 
-        rays = jax.vmap(functools.partial(_calc_ray, self))(x_centers, y_centers)
+        self = self.set_voxel(ray_voxels, ray_voxels_attrs)
 
-        ray_attrs = jnp.ones((x_points.shape[0], rays.shape[1]))
-        #ray_attrs = ray_attrs * attrs[:, None]
+        if not return_aux:
+            return self
+        else:
+            aux = (
+                rays.reshape(*ORIG_POINT_SHAPE, self._raycasting_worst_case_num_steps + 1, 3),
+                ray_voxels.reshape(*ORIG_POINT_SHAPE, self._raycasting_worst_case_num_steps + 1, 3),
+                final_attrs,
+            )
 
-        rays = rays.reshape(x_points.shape[0] * rays.shape[1], 3)
-        ray_attrs = ray_attrs.reshape(x_points.shape[0] * ray_attrs.shape[1])
-        return self.set_point(rays, ray_attrs)
+            return self, aux
+
 
 
     @jax.jit
@@ -380,7 +467,23 @@ class VoxGrid(VoxCol):
         #grid = grid.at[0:voxcol.real_grid_shape[0],0:voxcol.real_grid_shape[1],0:voxcol.real_grid_shape[2]].set(0)
         return VoxGrid(grid=grid, **vars(voxcol))
 
-#TODO can we get away from the error slice by using proper .at functionality?
+    @jax.jit
+    def empty(self):
+        return VoxGrid.build_from_voxcol(self.to_voxcol())
+
+    @jax.jit
+    def update(self, grid):
+        if isinstance(grid, VoxList):
+            grid = grid.to_voxelgrid()
+        if isinstance(grid, VoxGrid):
+            grid = grid.grid
+
+        mask = (grid > 0).astype(jnp.uint32)
+        new_grid = self.grid * (1-mask) + grid * mask
+        return self.replace(grid=new_grid)
+
+    """
+    #TODO can we get away from the error slice by using proper .at functionality?
     @jax.jit
     def set_grid(self, grid: jnp.array) -> Self:
         # grid of unpadded size
@@ -389,7 +492,7 @@ class VoxGrid(VoxCol):
             grid[0:self.real_grid_shape[0], 0:self.real_grid_shape[1], 0:self.real_grid_shape[2]],
             mode="drop"
         )
-        return self.replace(_grid=new__grid)
+        return self.replace(_grid=new__grid)"""
 
     def to_voxellist(self, size: int=None) -> VoxList:
         xs, ys, zs = jnp.nonzero(self.grid, size=size, fill_value=self.padded_error_index_tuple)
@@ -412,6 +515,24 @@ class VoxGrid(VoxCol):
             attrs = jnp.ones(voxels.shape[0])
 
         return self.at[voxels[:, 0], voxels[:, 1], voxels[:, 2]].set(attrs)
+
+    @functools.partial(jax.jit, static_argnums=(1,))
+    def dilate(self, distance=1, attr=None) -> Self:
+        # very costly! use carefully
+        # in most applications, it might be more worth it to call .dilate(1).dilate(1) vs .dilate(2) !
+
+        if attr is None:
+            attr = 1
+
+        kernel_shape = distance + distance + 1
+
+        kernel = jnp.ones((kernel_shape, kernel_shape, kernel_shape), dtype=int)
+        new_grid = jax.scipy.signal.convolve(self.grid, kernel, mode='same')
+
+        diff = (new_grid != self.grid).astype(jnp.uint32)
+        dilated_grid = self.grid * (1-diff) + attr * diff
+
+        return self.replace(grid=dilated_grid)
 
     @property
     def at(self):
@@ -465,6 +586,10 @@ class VoxList(VoxCol):
         voxcol = super().build_from_bounds(minbound, maxbound, voxel_size)
         return VoxList.build_from_voxcol(voxcol)
 
+    @jax.jit
+    def empty(self):
+        return VoxList.build_from_voxcol(self.to_voxcol())
+
     @classmethod
     def build_from_voxcol(cls, voxcol: VoxCol) -> Self:
         voxels = jnp.array([], dtype=jnp.int32).reshape((0, 3))
@@ -483,7 +608,7 @@ class VoxList(VoxCol):
         voxels = jnp.atleast_2d(voxels)
 
         #self = self.del_voxel(voxels)
-        voxels, attrs = self._cull(voxels, attrs, do_attrs=True)
+        voxels, attrs = self._cull(voxels, attrs, return_attrs=True)
 
         new_voxels = jnp.vstack([self.voxels, voxels])
         new_attrs = jnp.hstack([self.attrs, attrs])
@@ -505,6 +630,14 @@ class VoxList(VoxCol):
         selfvoxels = selfvoxels[attr_is_valid]
         selfattrs = selfattrs[attr_is_valid]
         return self.replace(voxels=selfvoxels, attrs=selfattrs)
+
+    #@jax.jit
+    def update(self, grid):
+        # must be a voxgrid or voxlist
+        if isinstance(grid, VoxGrid):
+            grid = grid.to_voxellist()
+
+        return self.set_voxel(grid.voxels, grid.attrs)
 
 #    @functools.partial(jax.jit, static_argnames=)
     @jax.jit
@@ -538,7 +671,7 @@ class VoxList(VoxCol):
         # returns index and attr of voxel
         # if voxel is not found, index will be -1, but attr will be 0 if valid and -1 if invalid
         voxels = jnp.atleast_2d(voxels)
-        voxels, invalid = self._cull(voxels, do_attrs=None, return_invalid=True)
+        voxels, invalid = self._cull(voxels, return_attrs=False, return_invalid=True)
 
         voxshape_minus_ones = jnp.ones(voxels.shape[0], dtype=jnp.uint32) * -1
         carry = (voxels, voxshape_minus_ones, jnp.zeros_like(voxshape_minus_ones,dtype=jnp.float32))
@@ -597,6 +730,7 @@ class VoxList(VoxCol):
         return jnp.logical_not(self._cull(voxels, attrs=attrs, return_invalid=True)[-1])
 
     def to_open3d(self, attrmanager=None):
+        self = self.deduplicate()
         mask = self.get_mask_valid()
 
         voxels = self.voxels[mask]

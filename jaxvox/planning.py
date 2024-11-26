@@ -65,6 +65,29 @@ def path_to_pairs(paths):
     return jax.vmap(do_path)(paths)
 
 
+def path_and_grid_have_collision(voxgrid, single_path):
+    waypoint_pairs = path_to_pairs(single_path)
+    attrs = jax.random.randint(key, (4,), minval=2, maxval=100) + 10
+
+    voxgrid2 = voxgrid.empty()
+    voxgrid2 = voxgrid2.raycast(waypoint_pairs, attrs=attrs)
+
+    return (((voxgrid2.grid > 1) + (voxgrid.grid > 1)) == 2).any()
+
+def path_and_path_have_collision(voxgrid, single_path_1, single_path_2):
+    pairs_1 = path_to_pairs(single_path_1)
+    voxgrid_1 = voxgrid.empty()
+    voxgrid_1 = voxgrid_1.raycast(pairs_1, attrs=1)
+    voxgrid_1 = voxgrid_1.dilate(1).dilate(1)
+
+    pairs_2 = path_to_pairs(single_path_2)
+    voxgrid_2 = voxgrid.empty()
+    voxgrid_2 = voxgrid_2.raycast(pairs_2, attrs=1)
+    voxgrid_2 = voxgrid_2.dilate(1).dilate(1)
+
+    return (((voxgrid_1.grid > 1) + (voxgrid_2.grid > 1)) == 2).any()
+
+
 if __name__ == "__main__":
     """
     positions_dict = {
@@ -108,10 +131,29 @@ if __name__ == "__main__":
         assert (v <= voxgrid.maxbound).all()
 
     key = jax.random.PRNGKey(0)
-    test_waypoints = gen_paths(key, 10, jnp.array(positions_dict["alice"]), jnp.array(positions_dict["apple"]), 4, dist_tol=voxgrid.voxel_size*2, radius_tol=voxgrid.voxel_size*2)
+    test_waypoints = gen_paths(key, 10, jnp.array(positions_dict["alice"]), jnp.array(positions_dict["apple"]), 4, dist_tol=voxgrid.voxel_size*2, radius_tol=voxgrid.voxel_size*5)
 
     waypoint_pairs = path_to_pairs(test_waypoints)
-    voxgrid = voxgrid.raycast(waypoint_pairs)
+    attrs = jax.random.randint(key, (4,), minval=2, maxval=100) + 10
+
+    voxgrid2 = voxgrid.empty()
+    voxgrid2 = voxgrid2.raycast(waypoint_pairs[0], attrs=attrs)
+    voxgrid2 = voxgrid2.dilate(1).dilate(1)
+
+
+    #voxgrid2 = voxgrid.empty()
+    #neighbours_voxels = voxgrid2.voxel_to_neighbours(jnp.array([[10, 10, 10], [20, 20, 20]]), 1, include_corners=False)
+    #neighbours_voxels = neighbours_voxels.reshape(-1,3)
+    #voxgrid2 = voxgrid2.set_voxel(neighbours_voxels, 80)
+    #voxgrid2 = voxgrid2.set_voxel_neighbours(jnp.array([[10, 10, 10], [20, 20, 20]]), 1, 1, include_corners=False)
+    #voxgrid2 = voxgrid2.dilate(1)
+
+    voxgrid = voxgrid.update(voxgrid2)
+
+    #voxgrid = voxgrid.empty()
+    #voxgrid = voxgrid.raycast(waypoint_pairs, attrs=attrs)
+
+
 
     #test_waypoints = test_waypoints.reshape(10*4,3)
     #test_voxels = voxgrid.point_to_voxel(test_waypoints)
