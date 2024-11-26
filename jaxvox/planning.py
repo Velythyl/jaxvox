@@ -72,7 +72,7 @@ def path_and_grid_have_collision(voxgrid, single_path):
     voxgrid2 = voxgrid.empty()
     voxgrid2 = voxgrid2.raycast(waypoint_pairs, attrs=attrs)
 
-    return (((voxgrid2.grid > 1) + (voxgrid.grid > 1)) == 2).any()
+    return (((voxgrid2.grid > 1) + (voxgrid.grid > 1)) > 1).any()
 
 def path_and_path_have_collision(voxgrid, single_path_1, single_path_2):
     pairs_1 = path_to_pairs(single_path_1)
@@ -85,7 +85,7 @@ def path_and_path_have_collision(voxgrid, single_path_1, single_path_2):
     voxgrid_2 = voxgrid_2.raycast(pairs_2, attrs=1)
     voxgrid_2 = voxgrid_2.dilate(1).dilate(1)
 
-    return (((voxgrid_1.grid > 1) + (voxgrid_2.grid > 1)) == 2).any()
+    return (((voxgrid_1.grid > 1) + (voxgrid_2.grid > 1)) > 1).any()
 
 
 if __name__ == "__main__":
