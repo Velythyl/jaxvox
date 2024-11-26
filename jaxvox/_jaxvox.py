@@ -323,7 +323,7 @@ class VoxCol:
         step_points = step_points + x
         return jnp.concatenate([step_points, y[None]], axis=0)
 
-    @jax.jit
+    @functools.partial(jax.jit, static_argnums=(4,))
     def raycast(self, x_points, y_points=None, attrs=None, return_aux: bool=False):
         if attrs is None:
             attrs = 1
@@ -361,7 +361,7 @@ class VoxCol:
 
         final_attr_shape = jnp.ones((*ORIG_POINT_SHAPE, self._raycasting_worst_case_num_steps+1))
 
-        if attrs.shape[0] == 1:
+        if attrs.shape[0] == 1 and len(attrs.shape) == 1:
             final_attrs = attrs * final_attr_shape
         else:
             if len(ORIG_POINT_SHAPE) == 2:
@@ -386,6 +386,8 @@ class VoxCol:
                 final_attrs,
             )
 
+
+            # (ray_points, ray_voxels, ray_voxels_attrs)
             return self, aux
 
 

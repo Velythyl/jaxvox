@@ -56,7 +56,10 @@ def gen_paths(key, num_paths, start_point, end_point, num_waypoints, dist_tol=0.
     return jax.vmap(bound_gen_path)(num_key_keys)
 
 def path_to_pairs(paths):
-    paths = jnp.atleast_3d(paths)
+    #paths = jnp.atleast_3d(paths)
+    if len(paths.shape) == 2:
+        paths = paths[None]
+
     def do_path(path):
         x = path
         y = jnp.concatenate([x[1:], x[-2][None]], axis=0)
@@ -65,27 +68,65 @@ def path_to_pairs(paths):
     return jax.vmap(do_path)(paths)
 
 
-def path_and_grid_have_collision(voxgrid, single_path):
-    waypoint_pairs = path_to_pairs(single_path)
-    attrs = jax.random.randint(key, (4,), minval=2, maxval=100) + 10
+def path_and_grid_have_collision(voxgrid, genned_path):
+
+    waypoint_pairs = path_to_pairs(genned_path)
+    attrs = jax.random.randint(jax.random.PRNGKey(0), (4,), minval=2, maxval=100) + 10
 
     voxgrid2 = voxgrid.empty()
     voxgrid2 = voxgrid2.raycast(waypoint_pairs, attrs=attrs)
 
     return (((voxgrid2.grid > 1) + (voxgrid.grid > 1)) > 1).any()
 
-def path_and_path_have_collision(voxgrid, single_path_1, single_path_2):
-    pairs_1 = path_to_pairs(single_path_1)
+def path_and_path_have_collision(voxgrid, path_1, path_2):
+    pairs_1 = path_to_pairs(path_1)
     voxgrid_1 = voxgrid.empty()
-    voxgrid_1 = voxgrid_1.raycast(pairs_1, attrs=1)
-    voxgrid_1 = voxgrid_1.dilate(1).dilate(1)
+    voxgrid_1, (ray_points, ray_voxels, ray_voxels_attrs) = voxgrid_1.raycast(pairs_1, attrs=1, return_aux=True)
+    voxgrid_1 = voxgrid_1.set_voxel_neighbours(ray_voxels.reshape(-1,3), distance=2, include_corners=True)
 
-    pairs_2 = path_to_pairs(single_path_2)
+    #voxgrid_1 = voxgrid_1.dilate(1).dilate(1)
+
+    pairs_2 = path_to_pairs(path_2)
     voxgrid_2 = voxgrid.empty()
-    voxgrid_2 = voxgrid_2.raycast(pairs_2, attrs=1)
-    voxgrid_2 = voxgrid_2.dilate(1).dilate(1)
+    voxgrid_2, (ray_points, ray_voxels, ray_voxels_attrs) = voxgrid_2.raycast(pairs_2, attrs=1)
+    #voxgrid_2 = voxgrid_2.dilate(1).dilate(1)
+    voxgrid_2 = voxgrid_2.set_voxel_neighbours(ray_voxels.reshape(-1,3), distance=2, include_corners=True)
 
     return (((voxgrid_1.grid > 1) + (voxgrid_2.grid > 1)) > 1).any()
+
+
+def plan_single_robot(voxgrid, robot_position, target_position, batch_size=100):
+    key = jax.random.PRNGKey(0)
+    key, rng = jax.random.split(key)
+    genned_paths = gen_paths(rng, batch_size, jnp.array(robot_position), jnp.array(target_position), 4,
+                               dist_tol=voxgrid.voxel_size * 2, radius_tol=voxgrid.voxel_size * 10)
+
+    cloud_collision_mask = jax.vmap(functools.partial(path_and_grid_have_collision, voxgrid))(genned_paths)
+    return genned_paths, cloud_collision_mask
+
+def plan_many_robots(voxgrid, robot_positions, target_positions, batch_size=100, other_paths=None):
+    NUM_RP = len(robot_positions)
+
+    all_genned_paths, all_cloud_collision_masks = jax.vmap(functools.partial(plan_single_robot, voxgrid=voxgrid, batch_size=batch_size, ))(robot_position=robot_positions, target_position=target_positions)
+
+    if len(robot_positions) > 2:
+        raise NotImplementedError()
+    elif len(robot_positions) == 2:
+        r1_paths = all_genned_paths[0]
+        r2_paths = all_genned_paths[1]
+
+        expanded_r2_paths = jnp.repeat(r2_paths[None], batch_size, axis=0)
+
+        def for_each_r1_path(voxgrid, r1_path, r2_paths):
+            def for_each_r2_path(voxgrid, r1_path, r2_path):
+                return path_and_path_have_collision(voxgrid, r1_path, r2_path)
+            return jax.vmap(functools.partial(for_each_r2_path, voxgrid, r1_path))(r2_paths)
+        mask_arr = jax.vmap(functools.partial(for_each_r1_path, voxgrid=voxgrid))(r1_path=r1_paths, r2_paths=expanded_r2_paths)
+
+
+    return all_genned_paths
+
+
 
 
 if __name__ == "__main__":
@@ -130,6 +171,10 @@ if __name__ == "__main__":
         assert (v >= voxgrid.minbound).all()
         assert (v <= voxgrid.maxbound).all()
 
+
+    plan_many_robots(voxgrid, jnp.array([positions_dict["alice"], positions_dict["bob"]]), jnp.array([positions_dict["milk"], positions_dict["banana"]]) )
+
+    exit()
     key = jax.random.PRNGKey(0)
     test_waypoints = gen_paths(key, 10, jnp.array(positions_dict["alice"]), jnp.array(positions_dict["apple"]), 4, dist_tol=voxgrid.voxel_size*2, radius_tol=voxgrid.voxel_size*5)
 
@@ -148,7 +193,7 @@ if __name__ == "__main__":
     #voxgrid2 = voxgrid2.set_voxel_neighbours(jnp.array([[10, 10, 10], [20, 20, 20]]), 1, 1, include_corners=False)
     #voxgrid2 = voxgrid2.dilate(1)
 
-    voxgrid = voxgrid.update(voxgrid2)
+    #voxgrid = voxgrid.update(voxgrid2)
 
     #voxgrid = voxgrid.empty()
     #voxgrid = voxgrid.raycast(waypoint_pairs, attrs=attrs)
