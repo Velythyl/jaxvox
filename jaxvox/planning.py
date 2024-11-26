@@ -88,7 +88,7 @@ def path_and_path_have_collision(voxgrid, path_1, path_2):
 
     pairs_2 = path_to_pairs(path_2)
     voxgrid_2 = voxgrid.empty()
-    voxgrid_2, (ray_points, ray_voxels, ray_voxels_attrs) = voxgrid_2.raycast(pairs_2, attrs=1)
+    voxgrid_2, (ray_points, ray_voxels, ray_voxels_attrs) = voxgrid_2.raycast(pairs_2, attrs=1, return_aux=True)
     #voxgrid_2 = voxgrid_2.dilate(1).dilate(1)
     voxgrid_2 = voxgrid_2.set_voxel_neighbours(ray_voxels.reshape(-1,3), distance=2, include_corners=True)
 
@@ -172,7 +172,7 @@ if __name__ == "__main__":
         assert (v <= voxgrid.maxbound).all()
 
 
-    plan_many_robots(voxgrid, jnp.array([positions_dict["alice"], positions_dict["bob"]]), jnp.array([positions_dict["milk"], positions_dict["banana"]]) )
+    plan_many_robots(voxgrid, jnp.array([positions_dict["alice"], positions_dict["bob"]]), jnp.array([positions_dict["milk"], positions_dict["banana"]]), batch_size=2 )
 
     exit()
     key = jax.random.PRNGKey(0)
