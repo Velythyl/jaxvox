@@ -473,6 +473,12 @@ class VoxGrid(VoxCol):
     def empty(self):
         return VoxGrid.build_from_voxcol(self.to_voxcol())
 
+    def attrs_to_1(self):
+        return self.replace(grid=(self.grid >= 1).astype(jnp.float32))
+
+    def has_collision(self, voxgrid2):
+        return (self.attrs_to_1().grid + voxgrid2.attrs_to_1().grid >= 2).any()
+
     @jax.jit
     def update(self, grid):
         if isinstance(grid, VoxList):
