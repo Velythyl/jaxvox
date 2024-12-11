@@ -1,12 +1,9 @@
-import numpy as np
-
 import functools
 
 import jax.random
 import jax.numpy as jnp
 
-from split_key import split_key
-from transforms import rotation_matrix_from_vectors, transform_points
+from transforms import rotation_matrix_from_vectors
 
 
 def rand(key, minval=0, maxval=1):
@@ -63,7 +60,7 @@ def base_cone(key, height_a, base_radius_b):
     return jnp.hstack([x, y, z])
 
 if __name__ == "__main__":
-
+    from jaxvox.jaxutils.split_key import split_key
     _, keys = split_key(jax.random.PRNGKey(0), 1000)
 
     points = jax.vmap(functools.partial(side_cone, height_a=5, base_radius_b=2))(keys)
@@ -77,7 +74,6 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import matplotlib
     matplotlib.use("TkAgg")
-    from mpl_toolkits.mplot3d import Axes3D
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.scatter(points[:, 0], points[:, 1], points[:, 2])

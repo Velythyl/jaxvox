@@ -7,12 +7,15 @@ from dataclasses import dataclass
 from typing import Tuple, Union
 
 import math
-from typing_extensions import Self, Type
+from typing_extensions import Self
 
 import jax
 import jax.experimental
 import jax.lax
 from jax import numpy as jnp
+
+from jaxvox._jaxvox.jaxvox_attrs import AttrManager
+
 
 def indexarr2tup(arr: jnp.ndarray, type) -> Tuple:
     # NOT JITTABLE!
@@ -450,8 +453,8 @@ jax.tree_util.register_pytree_node(VoxCol,
                                    VoxCol._tree_flatten,
                                    VoxCol._tree_unflatten)
 
-import voxgrid_at_utils
-import voxlist_at_utils
+import jaxvox._jaxvox.voxgrid_at_utils as voxgrid_at_utils
+import jaxvox._jaxvox.voxlist_at_utils as voxlist_at_utils
 
 @dataclass
 class VoxGrid(VoxCol):
@@ -749,7 +752,6 @@ class VoxList(VoxCol):
         pcd_new = o3d.geometry.PointCloud()
         pcd_new.points = o3d.utility.Vector3dVector(centerpoints)
 
-        from jaxvox_attrs import AttrManager
         if attrmanager is not None:
             if isinstance(attrmanager, AttrManager):
                 assert isinstance(attrmanager, AttrManager)
@@ -781,7 +783,6 @@ class VoxList(VoxCol):
 
         #attrs = []
         if import_attrs is not None and import_attrs is not False:
-            from jaxvox_attrs import AttrManager
             color_dict = AttrManager()
             attrs = color_dict.add_attrvals_get_attrkeys([vx.color for vx in voxels])
         else:

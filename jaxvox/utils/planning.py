@@ -2,12 +2,12 @@ import functools
 
 import jax.random
 
-from jaxvox._jaxvox import VoxGrid
 
 import jax.numpy as jnp
 
-from jaxvox.samplers import inside_clipped_cone, base_cone
-from split_key import split_key
+from jaxvox._jaxvox._jaxvox import VoxGrid
+from jaxvox.jaxutils.split_key import split_key
+from jaxvox.utils.samplers import inside_clipped_cone
 from transforms import rotation_matrix_from_vectors, transform_points
 
 
@@ -221,6 +221,9 @@ if __name__ == "__main__":
                                                return_attrmanager=True)
     attrmanager.set_default_value((255, 0, 0))
 
+
+    voxgrid.display_as_o3d(attrmanager)
+
     for k, v in positions_dict.items():
         assert (v >= voxgrid.minbound).all()
         assert (v <= voxgrid.maxbound).all()
@@ -230,7 +233,7 @@ if __name__ == "__main__":
     voxgrid = voxgrid.empty()
 
     paths = plan_many_robots(voxgrid, jnp.array([positions_dict["alice"], positions_dict["bob"]]),
-                             jnp.array([positions_dict["banana"], positions_dict["cereal"]]), batch_size=2)
+                             jnp.array([positions_dict["apple"], positions_dict["cereal"]]), batch_size=2)
 
     voxgrid1 = raypaths(voxgrid, paths[0], 2, 1)
     voxgrid2 = raypaths(voxgrid, paths[1], 2, 20)
