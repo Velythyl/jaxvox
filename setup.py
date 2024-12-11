@@ -11,6 +11,7 @@ setup(
         # If any package contains *.txt or *.rst files, include them:
         '': ['*.pcd', '*.json'],
     },
+    install_requires=["typing-extensions"]
 )
 
 
