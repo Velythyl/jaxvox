@@ -79,7 +79,7 @@ def path_and_grid_have_collision(voxgrid, genned_path):
     #voxgrid2 = voxgrid.empty()
     #voxgrid2 = voxgrid2.raycast(waypoint_pairs, attrs=attrs)
 
-    voxgrid2 = raypaths(voxgrid.empty(), genned_path, 0)
+    voxgrid2 = raypaths(voxgrid.empty(), genned_path, 2)
 
     return voxgrid.has_collision(voxgrid2) #((voxgrid2.grid > 1) + (voxgrid.grid > 1)) > 1).any()
 
@@ -116,8 +116,8 @@ def path_and_path_have_collision(voxgrid, path_1, path_2):
 
     return voxgrid_1.has_collision(voxgrid_2) #  (voxgrid_1.attr_to_1().grid + voxgrid_2.attr_to_1().grid >= 2).sum() > 0
 
-
-def plan_single_robot(voxgrid, robot_position, target_position, batch_size=100, dist_tol=None, radius_tol=None):
+@functools.partial(jax.jit, static_argnums=(3,))
+def jitbatch_plan_single_robot(voxgrid, robot_position, target_position, batch_size=100, dist_tol=None, radius_tol=None):
     if dist_tol is None:
         dist_tol = voxgrid.voxel_size * 2
     if radius_tol is None:
@@ -132,17 +132,28 @@ def plan_single_robot(voxgrid, robot_position, target_position, batch_size=100, 
     return genned_paths, cloud_collision_mask
 
 
-def plan_many_robots(voxgrid, robot_positions, target_positions, batch_size=100):
-    def one_pass(voxgrid, robot_positions, target_positions, batch_size):
-        all_genned_paths, all_cloud_collision_masks = jax.vmap(
-            functools.partial(plan_single_robot, voxgrid=voxgrid, batch_size=batch_size, ))(robot_position=robot_positions,
-                                                                                            target_position=target_positions)
 
+
+def plan_many_robots(voxgrid, robot_positions, target_positions, batch_size=100):
+    @functools.partial(jax.jit, static_argnums=(3,))
+    def _one_pass(voxgrid, robot_positions, target_positions, batch_size):
+        all_genned_paths, object_collision_mask = jax.vmap(
+            functools.partial(jitbatch_plan_single_robot, voxgrid=voxgrid, batch_size=batch_size, ))(robot_position=robot_positions,
+                                                                                                     target_position=target_positions)
+        paths = all_genned_paths
+        #no_object_collision_mask = jnp.logical_not(object_collision_mask)
+        #paths = []
+        #for rnum in range(len(robot_positions)):
+        #    paths.append(all_genned_paths[rnum][no_object_collision_mask[rnum]])
+
+        #for pa in paths:
+        #    if len(pa) == 0:
+        #        return jnp.array([jnp.nan])
         if len(robot_positions) > 2:
             raise NotImplementedError()
         elif len(robot_positions) == 2:
-            r1_paths = all_genned_paths[0] #jnp.concatenate([robot_positions[0][None], ], axis=0)
-            r2_paths = all_genned_paths[1] #jnp.concatenate([robot_positions[1][None], all_genned_paths[1]], axis=0)
+            r1_paths = paths[0] #jnp.concatenate([robot_positions[0][None], ], axis=0)
+            r2_paths = paths[1] #jnp.concatenate([robot_positions[1][None], all_genned_paths[1]], axis=0)
 
             def prepend_start_pos(rpath, start_pos):
                 def for_each_path(start_pos, _rpath):
@@ -161,16 +172,19 @@ def plan_many_robots(voxgrid, robot_positions, target_positions, batch_size=100)
 
                 return jax.vmap(functools.partial(for_each_r2_path, voxgrid, r1_path))(r2_paths)
 
-            has_collision = jax.vmap(functools.partial(for_each_r1_path, voxgrid=voxgrid))(r1_path=r1_paths,
+            robot_robot_collision_mask = jax.vmap(functools.partial(for_each_r1_path, voxgrid=voxgrid))(r1_path=r1_paths,
                                                                                       r2_paths=expanded_r2_paths)
+            r0_invalid = jnp.repeat(object_collision_mask[0][None], batch_size, axis=0)
+            r1_invalid = jnp.repeat(object_collision_mask[1][:,None], batch_size, axis=1)
+            any_collision_mask = robot_robot_collision_mask + r0_invalid + r1_invalid
 
-            is_valid_plan = jnp.logical_not(has_collision)
+            is_valid_plan = jnp.logical_not(any_collision_mask)
             nonzero = jnp.nonzero(is_valid_plan, size=1, fill_value=jnp.max(jnp.array(voxgrid.padded_grid_shape) * 2))
-            nonzero = jnp.array(nonzero, dtype=jnp.uint32).squeeze()
-            return all_genned_paths.at[:, nonzero].get(mode="fill", fill_value=jnp.nan)
+            #nonzero = jnp.array(nonzero, dtype=jnp.uint32).squeeze()
+            return jnp.concatenate([all_genned_paths[0, nonzero[0]][None], all_genned_paths[1, nonzero[1]][None]]).squeeze()
 
     for pass_id in range(10):
-        result = one_pass(voxgrid, robot_positions, target_positions, batch_size)
+        result = _one_pass(voxgrid, robot_positions, target_positions, batch_size)
         if jnp.isnan(result).any():
             result = None
         else:
@@ -222,7 +236,7 @@ if __name__ == "__main__":
     attrmanager.set_default_value((255, 0, 0))
 
 
-    voxgrid.display_as_o3d(attrmanager)
+    #voxgrid.display_as_o3d(attrmanager)
 
     for k, v in positions_dict.items():
         assert (v >= voxgrid.minbound).all()
@@ -230,13 +244,13 @@ if __name__ == "__main__":
 
     #voxgrid.display_as_o3d(attrmanager)
 
-    voxgrid = voxgrid.empty()
+    #voxgrid = voxgrid.empty()
 
     paths = plan_many_robots(voxgrid, jnp.array([positions_dict["alice"], positions_dict["bob"]]),
-                             jnp.array([positions_dict["apple"], positions_dict["cereal"]]), batch_size=2)
+                             jnp.array([positions_dict["apple"], positions_dict["cereal"]]), batch_size=10)
 
-    voxgrid1 = raypaths(voxgrid, paths[0], 2, 1)
-    voxgrid2 = raypaths(voxgrid, paths[1], 2, 20)
+    voxgrid = raypaths(voxgrid, paths[0], 2, 1)
+    voxgrid = raypaths(voxgrid, paths[1], 2, 20)
 
     voxgrid.display_as_o3d(attrmanager)
 
