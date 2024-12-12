@@ -74,17 +74,17 @@ def path_to_pairs(paths):
     return jax.vmap(do_path)(paths)
 
 
-def path_and_grid_have_collision(voxgrid, genned_path):
+def path_and_grid_have_collision(voxgrid, expand_size, genned_path):
     #waypoint_pairs = path_to_pairs(genned_path)
     #voxgrid2 = voxgrid.empty()
     #voxgrid2 = voxgrid2.raycast(waypoint_pairs, attrs=attrs)
 
-    voxgrid2 = raypaths(voxgrid.empty(), genned_path, 2)
+    voxgrid2 = raypaths(voxgrid.empty(), genned_path[:-1], expand_size)
 
     return voxgrid.has_collision(voxgrid2) #((voxgrid2.grid > 1) + (voxgrid.grid > 1)) > 1).any()
 
 
-@functools.partial(jax.jit, static_argnums=(2,))
+@functools.partial(jax.jit, static_argnums=(2,3))
 def raypaths(voxgrid_1, path, distance=0, attrs=None):
     if attrs is None:
         attrs = 1
@@ -98,8 +98,8 @@ def raypaths(voxgrid_1, path, distance=0, attrs=None):
                                           attrs=attrs)
 
 
-def path_and_path_have_collision(voxgrid, path_1, path_2):
-    voxgrid_1 = raypaths(voxgrid.empty(), path_1, distance=2, attrs=1)
+def path_and_path_have_collision(voxgrid, path_1, expand_size, path_2):
+    voxgrid_1 = raypaths(voxgrid.empty(), path_1, distance=expand_size, attrs=1)
     #pairs_1 = path_to_pairs(path_1)
     #voxgrid_1 = voxgrid.empty()
     #voxgrid_1, (ray_points, ray_voxels, ray_voxels_attrs) = voxgrid_1.raycast(pairs_1, attrs=1, return_aux=True)
@@ -112,12 +112,12 @@ def path_and_path_have_collision(voxgrid, path_1, path_2):
     #voxgrid_2, (ray_points, ray_voxels, ray_voxels_attrs) = voxgrid_2.raycast(pairs_2, attrs=1, return_aux=True)
     #voxgrid_2 = voxgrid_2.dilate(1).dilate(1)
     #voxgrid_2 = voxgrid_2.set_voxel_neighbours(ray_voxels.reshape(-1,3), distance=2, include_corners=True)
-    voxgrid_2 = raypaths(voxgrid.empty(), path_2, distance=2, attrs=2)
+    voxgrid_2 = raypaths(voxgrid.empty(), path_2, distance=expand_size, attrs=2)
 
     return voxgrid_1.has_collision(voxgrid_2) #  (voxgrid_1.attr_to_1().grid + voxgrid_2.attr_to_1().grid >= 2).sum() > 0
 
-@functools.partial(jax.jit, static_argnums=(3,))
-def jitbatch_plan_single_robot(voxgrid, robot_position, target_position, batch_size=100, dist_tol=None, radius_tol=None):
+@functools.partial(jax.jit, static_argnums=(3,6))
+def jitbatch_plan_single_robot(voxgrid, robot_position, target_position, batch_size=100, dist_tol=None, radius_tol=None, expand_size=2):
     if dist_tol is None:
         dist_tol = 2
     dist_tol = voxgrid.voxel_size * dist_tol
@@ -130,17 +130,17 @@ def jitbatch_plan_single_robot(voxgrid, robot_position, target_position, batch_s
     genned_paths = gen_paths(rng, batch_size, jnp.array(robot_position), jnp.array(target_position), 4,
                              dist_tol=dist_tol, radius_tol=radius_tol)
 
-    cloud_collision_mask = jax.vmap(functools.partial(path_and_grid_have_collision, voxgrid))(genned_paths)
+    cloud_collision_mask = jax.vmap(functools.partial(path_and_grid_have_collision, voxgrid, expand_size))(genned_paths)
     return genned_paths, cloud_collision_mask
 
 
 
 
-def plan_many_robots(voxgrid, robot_positions, target_positions, batch_size=100, dist_tol=None, radius_tol=None):
-    @functools.partial(jax.jit, static_argnums=(3,))
-    def _one_pass(voxgrid, robot_positions, target_positions, batch_size):
+def plan_many_robots(voxgrid, robot_positions, target_positions, batch_size=100, dist_tol=None, radius_tol=None, expand_size=2):
+    #@functools.partial(jax.jit, static_argnums=(3,))
+    def _one_pass(voxgrid, robot_positions, target_positions, batch_size, dist_tol, radius_tol):
         all_genned_paths, object_collision_mask = jax.vmap(
-            functools.partial(jitbatch_plan_single_robot, voxgrid=voxgrid, batch_size=batch_size, dist_tol=dist_tol, radius_tol=radius_tol))(robot_position=robot_positions,
+            functools.partial(jitbatch_plan_single_robot, voxgrid=voxgrid, batch_size=batch_size, dist_tol=dist_tol, radius_tol=radius_tol, expand_size=expand_size))(robot_position=robot_positions,
                                                                                                      target_position=target_positions)
         paths = all_genned_paths
         #no_object_collision_mask = jnp.logical_not(object_collision_mask)
@@ -168,13 +168,13 @@ def plan_many_robots(voxgrid, robot_positions, target_positions, batch_size=100,
 
             expanded_r2_paths = jnp.repeat(r2_paths[None], batch_size, axis=0)
 
-            def for_each_r1_path(voxgrid, r1_path, r2_paths):
-                def for_each_r2_path(voxgrid, r1_path, r2_path):
-                    return path_and_path_have_collision(voxgrid, r1_path, r2_path)
+            def for_each_r1_path(voxgrid, r1_path, r2_paths, expand_size):
+                def for_each_r2_path(voxgrid, r1_path, expand_size, r2_path):
+                    return path_and_path_have_collision(voxgrid, r1_path, expand_size, r2_path)
 
-                return jax.vmap(functools.partial(for_each_r2_path, voxgrid, r1_path))(r2_paths)
+                return jax.vmap(functools.partial(for_each_r2_path, voxgrid, r1_path, expand_size))(r2_paths)
 
-            robot_robot_collision_mask = jax.vmap(functools.partial(for_each_r1_path, voxgrid=voxgrid))(r1_path=r1_paths,
+            robot_robot_collision_mask = jax.vmap(functools.partial(for_each_r1_path, voxgrid=voxgrid, expand_size=expand_size))(r1_path=r1_paths,
                                                                                       r2_paths=expanded_r2_paths)
             r0_invalid = jnp.repeat(object_collision_mask[0][None], batch_size, axis=0)
             r1_invalid = jnp.repeat(object_collision_mask[1][:,None], batch_size, axis=1)
@@ -183,12 +183,16 @@ def plan_many_robots(voxgrid, robot_positions, target_positions, batch_size=100,
             is_valid_plan = jnp.logical_not(any_collision_mask)
             nonzero = jnp.nonzero(is_valid_plan, size=1, fill_value=jnp.max(jnp.array(voxgrid.padded_grid_shape) * 2))
             #nonzero = jnp.array(nonzero, dtype=jnp.uint32).squeeze()
-            return jnp.concatenate([all_genned_paths[0, nonzero[0]][None], all_genned_paths[1, nonzero[1]][None]]).squeeze()
+            return jnp.concatenate([
+                all_genned_paths.at[0, nonzero[0]].get(mode="fill", fill_value=jnp.nan)[None],
+                all_genned_paths.at[1, nonzero[1]].get(mode="fill", fill_value=jnp.nan)[None]]).squeeze()
 
     for pass_id in range(10):
-        result = _one_pass(voxgrid, robot_positions, target_positions, batch_size)
+        result = _one_pass(voxgrid, robot_positions, target_positions, batch_size, dist_tol, radius_tol)
         if jnp.isnan(result).any():
             result = None
+            dist_tol += 1
+            radius_tol += 1
         else:
             break
 
@@ -249,10 +253,10 @@ if __name__ == "__main__":
     #voxgrid = voxgrid.empty()
 
     paths = plan_many_robots(voxgrid, jnp.array([positions_dict["alice"], positions_dict["bob"]]),
-                             jnp.array([positions_dict["apple"], positions_dict["cereal"]]), batch_size=10, dist_tol=2, radius_tol=4)
+                             jnp.array([positions_dict["apple"], positions_dict["cereal"]]), batch_size=10, dist_tol=2, radius_tol=4, expand_size=5)
 
-    voxgrid = raypaths(voxgrid, paths[0], 2, 1)
-    voxgrid = raypaths(voxgrid, paths[1], 2, 20)
+    voxgrid = raypaths(voxgrid, paths[0], 3, 1)
+    voxgrid = raypaths(voxgrid, paths[1], 3, 20)
 
     voxgrid.display_as_o3d(attrmanager)
 
