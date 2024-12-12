@@ -120,10 +120,10 @@ def path_and_path_have_collision(voxgrid, path_1, path_2):
 def jitbatch_plan_single_robot(voxgrid, robot_position, target_position, batch_size=100, dist_tol=None, radius_tol=None):
     if dist_tol is None:
         dist_tol = 2
-        dist_tol = voxgrid.voxel_size * dist_tol
+    dist_tol = voxgrid.voxel_size * dist_tol
     if radius_tol is None:
         radius_tol = 10
-        radius_tol = voxgrid.voxel_size * radius_tol
+    radius_tol = voxgrid.voxel_size * radius_tol
 
     key = jax.random.PRNGKey(0)
     key, rng = jax.random.split(key)
@@ -249,7 +249,7 @@ if __name__ == "__main__":
     #voxgrid = voxgrid.empty()
 
     paths = plan_many_robots(voxgrid, jnp.array([positions_dict["alice"], positions_dict["bob"]]),
-                             jnp.array([positions_dict["apple"], positions_dict["cereal"]]), batch_size=10)
+                             jnp.array([positions_dict["apple"], positions_dict["cereal"]]), batch_size=10, dist_tol=2, radius_tol=4)
 
     voxgrid = raypaths(voxgrid, paths[0], 2, 1)
     voxgrid = raypaths(voxgrid, paths[1], 2, 20)
