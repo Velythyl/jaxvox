@@ -119,9 +119,11 @@ def path_and_path_have_collision(voxgrid, path_1, path_2):
 @functools.partial(jax.jit, static_argnums=(3,))
 def jitbatch_plan_single_robot(voxgrid, robot_position, target_position, batch_size=100, dist_tol=None, radius_tol=None):
     if dist_tol is None:
-        dist_tol = voxgrid.voxel_size * 2
+        dist_tol = 2
+        dist_tol = voxgrid.voxel_size * dist_tol
     if radius_tol is None:
-        radius_tol = voxgrid.voxel_size * 10
+        radius_tol = 10
+        radius_tol = voxgrid.voxel_size * radius_tol
 
     key = jax.random.PRNGKey(0)
     key, rng = jax.random.split(key)
@@ -134,11 +136,11 @@ def jitbatch_plan_single_robot(voxgrid, robot_position, target_position, batch_s
 
 
 
-def plan_many_robots(voxgrid, robot_positions, target_positions, batch_size=100):
+def plan_many_robots(voxgrid, robot_positions, target_positions, batch_size=100, dist_tol=None, radius_tol=None):
     @functools.partial(jax.jit, static_argnums=(3,))
     def _one_pass(voxgrid, robot_positions, target_positions, batch_size):
         all_genned_paths, object_collision_mask = jax.vmap(
-            functools.partial(jitbatch_plan_single_robot, voxgrid=voxgrid, batch_size=batch_size, ))(robot_position=robot_positions,
+            functools.partial(jitbatch_plan_single_robot, voxgrid=voxgrid, batch_size=batch_size, dist_tol=dist_tol, radius_tol=radius_tol))(robot_position=robot_positions,
                                                                                                      target_position=target_positions)
         paths = all_genned_paths
         #no_object_collision_mask = jnp.logical_not(object_collision_mask)
