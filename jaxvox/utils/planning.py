@@ -253,7 +253,7 @@ if __name__ == "__main__":
     #voxgrid = voxgrid.empty()
 
     paths = plan_many_robots(voxgrid, jnp.array([positions_dict["alice"], positions_dict["bob"]]),
-                             jnp.array([positions_dict["apple"], positions_dict["cereal"]]), batch_size=10, dist_tol=2, radius_tol=4, expand_size=5)
+                             jnp.array([positions_dict["apple"], positions_dict["cereal"]]), batch_size=10, dist_tol=2, radius_tol=6, expand_size=2)
 
     voxgrid = raypaths(voxgrid, paths[0], 3, 1)
     voxgrid = raypaths(voxgrid, paths[1], 3, 20)
