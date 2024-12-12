@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jaxvox._jaxvox._jaxvox import VoxGrid
 from jaxvox.jaxutils.split_key import split_key
 from jaxvox.utils.samplers import inside_clipped_cone
-from transforms import rotation_matrix_from_vectors, transform_points
+from jaxvox.utils.transforms import rotation_matrix_from_vectors, transform_points
 
 
 def gen_waypoint_fromto(rng, p1, target, dist, dist_tol, radius_tol):

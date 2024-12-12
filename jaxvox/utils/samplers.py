@@ -3,7 +3,7 @@ import functools
 import jax.random
 import jax.numpy as jnp
 
-from transforms import rotation_matrix_from_vectors
+from jaxvox.utils.transforms import rotation_matrix_from_vectors
 
 
 def rand(key, minval=0, maxval=1):
