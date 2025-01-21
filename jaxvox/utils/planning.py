@@ -230,9 +230,9 @@ if __name__ == "__main__":
     import open3d as o3d
     import json
 
-    pcd = o3d.io.read_point_cloud("./data/1/pcd.pcd")
+    pcd = o3d.io.read_point_cloud("../data/1/pcd.pcd")
 
-    with open("./data/1/poses.json") as f:
+    with open("../data/1/poses.json") as f:
         positions_dict = json.loads(f.read())
     positions_dict = {k: jnp.array(v) for k, v in positions_dict.items()}
 
@@ -255,8 +255,8 @@ if __name__ == "__main__":
     paths = plan_many_robots(voxgrid, jnp.array([positions_dict["alice"], positions_dict["bob"]]),
                              jnp.array([positions_dict["apple"], positions_dict["cereal"]]), batch_size=10, dist_tol=2, radius_tol=6, expand_size=2)
 
-    voxgrid = raypaths(voxgrid, paths[0], 3, 1)
-    voxgrid = raypaths(voxgrid, paths[1], 3, 20)
+    voxgrid = raypaths(voxgrid, paths[0], 1, 1)
+    voxgrid = raypaths(voxgrid, paths[1], 1, 20)
 
     voxgrid.display_as_o3d(attrmanager)
 

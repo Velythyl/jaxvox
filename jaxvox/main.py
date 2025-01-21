@@ -127,8 +127,8 @@ if __name__ == '__main__':
         #print(voxel_grid.voxel_to_point(voxel_indices_1))
         #print(voxel_grid.voxel_to_8points(voxel_indices_1))
 
-    test_some_io()
-    test_o3d_io()
+    #test_some_io()
+    #test_o3d_io()
     #test_display_voxlist()
     test_display()
 
