@@ -1,5 +1,6 @@
 import jax.numpy as jnp
-from jaxvox._jaxvox.slicer import concretize_index
+
+from jaxvox.slicer import concretize_index
 
 
 # TODO WIPPPPP

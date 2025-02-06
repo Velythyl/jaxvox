@@ -14,7 +14,7 @@ import jax.experimental
 import jax.lax
 from jax import numpy as jnp
 
-from jaxvox._jaxvox.jaxvox_attrs import AttrManager
+from jaxvox.jaxvox_attrs import AttrManager
 
 
 def indexarr2tup(arr: jnp.ndarray, type) -> Tuple:
@@ -453,8 +453,8 @@ jax.tree_util.register_pytree_node(VoxCol,
                                    VoxCol._tree_flatten,
                                    VoxCol._tree_unflatten)
 
-import jaxvox._jaxvox.voxgrid_at_utils as voxgrid_at_utils
-import jaxvox._jaxvox.voxlist_at_utils as voxlist_at_utils
+import jaxvox.voxgrid_at_utils as voxgrid_at_utils
+import jaxvox.voxlist_at_utils as voxlist_at_utils
 
 @dataclass
 class VoxGrid(VoxCol):
@@ -709,7 +709,7 @@ class VoxList(VoxCol):
 
     @property
     def at(self):
-        #raise NotImplementedError()
+        raise NotImplementedError()
         return voxlist_at_utils._VoxListIndexUpdateHelper(self)
 
     def _tree_flatten(self):

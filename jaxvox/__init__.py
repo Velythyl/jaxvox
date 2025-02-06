@@ -1,1 +1,1 @@
-from jaxvox._jaxvox._jaxvox import VoxGrid, VoxCol, VoxList
+from jaxvox._jaxvox import VoxGrid, VoxCol, VoxList
