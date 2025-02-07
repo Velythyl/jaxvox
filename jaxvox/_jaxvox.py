@@ -554,6 +554,21 @@ class VoxGrid(VoxCol):
         voxels = jnp.atleast_2d(voxels)
         return self.at[voxels[:,0], voxels[:,1], voxels[:,2]].get()
 
+    def __add__(self, other: VoxGrid):
+        return self.replace(grid=self.grid+other.grid)
+
+    def __sub__(self, other: VoxGrid):
+        return self.replace(grid=self.grid-other.grid)
+
+    def __mul__(self, other: VoxGrid):
+        return self.replace(grid=self.grid*other.grid)
+
+    def __floordiv__(self, other: VoxGrid):
+        return self.replace(grid=jnp.floor_divide(self.grid, other.grid))
+
+    def __truediv__(self, other: VoxGrid):
+        return self.replace(grid=self.grid / other.grid)
+
     @classmethod
     def from_open3d(cls, o3d_grid, import_attrs=True, return_attrmanager=False) -> Self:
         voxlist_and_maybe_attrdict = VoxList.from_open3d(o3d_grid, import_attrs=import_attrs, return_attrmanager=return_attrmanager)
