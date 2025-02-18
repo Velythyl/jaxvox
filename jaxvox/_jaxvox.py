@@ -14,6 +14,7 @@ import jax.experimental
 import jax.lax
 from jax import numpy as jnp
 
+from jaxvox.jaxutils import bool_ifelse
 from jaxvox.jaxvox_attrs import AttrManager
 
 
@@ -265,10 +266,6 @@ class VoxCol:
         visualizer.poll_events()
         visualizer.update_renderer()
 
-        view_control = visualizer.get_view_control()
-        view_control.set_front([1, 0, 0])
-        view_control.set_up([0, 0, 1])
-        view_control.set_lookat([0, 0, 0])
         visualizer.run()
 
     @classmethod
@@ -282,6 +279,10 @@ class VoxCol:
             padded_grid_shape=padded_grid_shape,
             voxel_size=voxel_size
         )
+
+    def get_masked_voxel(self, voxels, mask):
+        # returns the ``error voxel`` for false masks, the correct voxel otherwise
+        return bool_ifelse(mask, voxels, self.padded_error_index_array)
 
     def to_voxelgrid(self) -> VoxGrid:
         raise NotImplementedError()
